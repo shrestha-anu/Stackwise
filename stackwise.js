@@ -9,9 +9,89 @@ let CATS, CAT_COLORS, LOYALTY_PROGRAMS, ISSUER_NAMES, CARDS, VALUATION;
 // STATE
 // ─────────────────────────────────────────────────────────────
 let owned = new Set(); // filled from cards marked owned:true once data loads
-let spend = { Dining:500, Grocery:400, Travel:300, Gas:150, Streaming:50, Shopping:200, Other:400 };
+// Default monthly spend. "Category/Sub-type" entries are converted to spend-line keys once data loads.
+const DEFAULT_SPEND = { Dining:500, 'Grocery/Supermarkets':400, TravelFlights:150, TravelHotels:100, TravelCars:50, Gas:150, Streaming:50, 'Shopping/Online shopping':100, 'Shopping/In-store & other':100, Other:400 };
+let spend = {}; // keyed by spend line (see buildSpendLines); missing keys count as 0
 let cpp = 0.018;
 let cardSpend = {}; // { cardName: { Dining: 0, Grocery: 0, ... } }
+
+// ─────────────────────────────────────────────────────────────
+// SPEND LINES
+// ─────────────────────────────────────────────────────────────
+// Both tabs use the same breakdown:
+//  - Travel is split into Flights / Hotels / Cars, booked direct or through a bank travel site.
+//  - Categories listed in SUB_CATEGORIES (e.g. Grocery, Shopping) are split by type of store.
+//  - A card's home-merchant rates (card.merchantRates, e.g. Prime Visa at Amazon) add a row for
+//    that merchant under its parent line, only for the cards passed in (the wallet, or one card).
+const TRAVEL_TYPES = ['Flights','Hotels','Cars'];
+let SUB_CATEGORIES = {}; // { Grocery: [{ name, defaultsTo? }, ...] } from data
+let SPEND_LINES = [];    // Optimizer lines, rebuilt whenever the wallet changes
+
+function subKey(cat, label) { return 'Sub_' + cat + '_' + label.replace(/[^a-zA-Z0-9]/g, '_'); }
+function merchKey(merchant) { return 'Merch_' + merchant.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+// Lines for one non-travel category, with merchant rows for the given cards' home merchants.
+function categoryLines(cat, cards) {
+  const subs = SUB_CATEGORIES[cat];
+  const baseLines = subs
+    ? subs.map(s => ({ key:subKey(cat, s.name), cat, sub:s.name, label:`${cat} — ${s.name}` }))
+    : [{ key:cat, cat, label:cat }];
+  const lines = [];
+  baseLines.forEach(line => {
+    lines.push(line);
+    const path = line.sub ? `${cat}/${line.sub}` : cat;
+    const seen = [];
+    cards.forEach(c => (c.merchantRates || []).forEach(m => {
+      if (m.line !== path || seen.includes(m.merchant)) return;
+      seen.push(m.merchant);
+      lines.push({ key:merchKey(m.merchant), cat, sub:line.sub, merchant:m.merchant, label:`${cat} — ${m.merchant}` });
+    }));
+  });
+  return lines;
+}
+
+function buildSpendLines() {
+  const walletCards = CARDS.filter(c => owned.has(c.name));
+  const lines = [];
+  CATS.forEach(cat => {
+    if (cat === 'Travel') {
+      TRAVEL_TYPES.forEach(t => lines.push({ key:'Travel' + t, cat, label:`Travel — ${t}`, travelType:t }));
+      TRAVEL_TYPES.forEach(t => lines.push({ key:'Portal' + t, cat, label:`Travel site — ${t}`, travelType:t, portal:true }));
+      return;
+    }
+    lines.push(...categoryLines(cat, walletCards));
+  });
+  return lines;
+}
+
+// Rate a card earns on a spend line. Used by both tabs.
+function lineRate(c, line) {
+  const base = c.rates[line.cat] || 1;
+  if (line.travelType) {
+    const direct = c.travelSplit ? c.travelSplit[line.travelType] : base;
+    if (!line.portal) return direct;
+    if (c.portalRate && typeof c.portalRate === 'object') {
+      return c.portalRate[line.travelType] !== undefined ? c.portalRate[line.travelType] : direct;
+    }
+    return c.portalRate || direct;
+  }
+  if (line.merchant) {
+    const m = (c.merchantRates || []).find(x => x.merchant === line.merchant);
+    if (m) return m.rate;
+    // no home-merchant rate on this card: it earns its normal rate for the parent line
+  }
+  if (!line.sub) return base;
+  const subs = c.subRates && c.subRates[line.cat];
+  if (subs && subs[line.sub] !== undefined) return subs[line.sub];
+  const def = (SUB_CATEGORIES[line.cat] || []).find(s => s.name === line.sub);
+  return def && def.defaultsTo ? (c.rates[def.defaultsTo] || 1) : base;
+}
+
+// Rebuild the Optimizer's lines and spend panel (merchant rows depend on the wallet).
+function refreshSpendLines() {
+  SPEND_LINES = buildSpendLines();
+  buildSpend();
+}
 
 // ─────────────────────────────────────────────────────────────
 // BUILD UI
@@ -59,6 +139,7 @@ function renderWalletChips() {
       e.stopPropagation();
       owned.delete(c.name);
       buildWallet();
+      refreshSpendLines();
       document.getElementById('owned-count').textContent = owned.size + ' card' + (owned.size !== 1 ? 's' : '');
       recalc();
     };
@@ -72,19 +153,20 @@ document.getElementById('wallet-select').addEventListener('change', function() {
   owned.add(this.value);
   this.value = '';
   buildWallet();
+  refreshSpendLines();
   recalc();
 });
 
 function buildSpend() {
   const el = document.getElementById('spend-panel');
   el.innerHTML = '';
-  CATS.forEach(cat => {
+  SPEND_LINES.forEach(line => {
     const row = document.createElement('div');
     row.className = 'spend-row';
-    row.innerHTML = `<span class="spend-label">${cat}</span>
+    row.innerHTML = `<span class="spend-label">${line.label}</span>
       <div class="spend-input-wrap">
         <span>$</span>
-        <input type="number" value="${spend[cat]}" min="0" step="50" data-cat="${cat}">
+        <input type="number" value="${spend[line.key] || 0}" min="0" step="50" data-cat="${line.key}">
       </div>`;
     row.querySelector('input').addEventListener('input', function() {
       spend[this.dataset.cat] = Math.max(0, parseInt(this.value)||0);
@@ -114,12 +196,12 @@ function buildValuation() {
 // ─────────────────────────────────────────────────────────────
 // RECALC
 // ─────────────────────────────────────────────────────────────
-function getBest(cat, ownedOnly) {
+function getBest(line, ownedOnly) {
   let best = null, bestRate = 0;
   CARDS.forEach(c => {
     if (ownedOnly && !owned.has(c.name)) return;
     if (!ownedOnly && c.coBrand) return; // exclude co-brand cards from "best available" — their high rates are brand-restricted, not general category multipliers
-    const r = c.rates[cat] || 1;
+    const r = lineRate(c, line);
     if (r > bestRate) { bestRate = r; best = c; }
   });
   return { card: best, rate: Math.max(bestRate, 1) };
@@ -137,17 +219,21 @@ function recalc() {
   let totalPts = 0, maxPts = 0;
   const rows = [];
 
-  CATS.forEach(cat => {
-    const mo = spend[cat] || 0;
+  SPEND_LINES.forEach(line => {
+    const mo = spend[line.key] || 0;
     const ann = mo * 12;
-    const { card: ownedCard, rate: ownedRate } = getBest(cat, true);
-    const { card: bestCard,  rate: bestRate  } = getBest(cat, false);
+    const { card: ownedCard, rate: ownedRate } = getBest(line, true);
+    const { card: bestCard,  rate: bestRate  } = getBest(line, false);
     const earned = ann * ownedRate;
     const possible = ann * bestRate;
     totalPts += earned;
     maxPts   += possible;
-    rows.push({ cat, mo, ann, ownedCard, ownedRate, earned, bestCard, bestRate, possible });
+    rows.push({ line, mo, ann, ownedCard, ownedRate, earned, bestCard, bestRate, possible });
   });
+
+  // For travel-site lines, show which travel site the card's rate applies to
+  const cardLabel = (card, line) =>
+    card.name + (line.portal && card.portalLabel && card.portalLabel !== 'Direct only' ? ` · ${card.portalLabel}` : '');
 
   const gap = Math.max(0, maxPts - totalPts);
   const val = totalPts * cpp;
@@ -165,20 +251,24 @@ function recalc() {
     const gapPts = Math.round(r.possible - r.earned);
     const sameCard = r.ownedCard && r.bestCard && r.ownedCard.name === r.bestCard.name;
     return `<tr>
-      <td class="cat-name">${r.cat}</td>
+      <td class="cat-name">${r.line.label}</td>
       <td class="mono">$${r.mo.toLocaleString()}</td>
-      <td class="card-name ${r.ownedCard?'':'none'}">${r.ownedCard ? r.ownedCard.name : 'None owned'}</td>
+      <td class="card-name ${r.ownedCard?'':'none'}">${r.ownedCard ? cardLabel(r.ownedCard, r.line) : 'None owned'}</td>
       <td><span class="rate-badge ${rateClass(r.ownedRate)}">${r.ownedRate}x</span></td>
       <td class="mono">${fmt0(r.earned)}</td>
-      <td class="card-name" style="color:var(--muted2);font-size:12px">${r.bestCard ? r.bestCard.name : '—'}</td>
+      <td class="card-name" style="color:var(--muted2);font-size:12px">${r.bestCard ? cardLabel(r.bestCard, r.line) : '—'}</td>
       <td><span class="rate-badge ${rateClass(r.bestRate)}">${r.bestRate}x</span></td>
       <td class="gap-val ${gapPts > 0 && !sameCard ? 'pos' : 'zero'}">${gapPts > 0 && !sameCard ? '+'+fmt0(gapPts) : '—'}</td>
     </tr>`;
   }).join('');
 
-  // Breakdown bars
-  const maxEarned = Math.max(...rows.map(r => r.earned), 1);
-  document.getElementById('breakdown-panel').innerHTML = rows.map((r, i) =>
+  // Breakdown bars — one per top-level category, summing its spend lines
+  const catRows = CATS.map(cat => ({
+    cat,
+    earned: rows.filter(r => r.line.cat === cat).reduce((sum, r) => sum + r.earned, 0)
+  }));
+  const maxEarned = Math.max(...catRows.map(r => r.earned), 1);
+  document.getElementById('breakdown-panel').innerHTML = catRows.map((r, i) =>
     `<div class="breakdown-row">
       <span class="b-label">${r.cat}</span>
       <div class="b-track"><div class="b-fill" style="width:${Math.round(r.earned/maxEarned*100)}%;background:${CAT_COLORS[i]}"></div></div>
@@ -194,12 +284,12 @@ function recalc() {
   const scored = notOwned.map(c => {
     let uplift = 0;
     const winCats = [];
-    CATS.forEach(cat => {
-      const currentRate = getBest(cat, true).rate;
-      const newRate = c.rates[cat] || 1;
+    SPEND_LINES.forEach(line => {
+      const currentRate = getBest(line, true).rate;
+      const newRate = lineRate(c, line);
       if (newRate > currentRate) {
-        uplift += (spend[cat]||0) * 12 * (newRate - currentRate) * cpp;
-        winCats.push(cat);
+        uplift += (spend[line.key]||0) * 12 * (newRate - currentRate) * cpp;
+        winCats.push(line.label);
       }
     });
     return { card:c, uplift, winCats };
@@ -233,9 +323,8 @@ function renderFeeCoverage() {
   el.innerHTML = ownedCards.map(c => {
     // Points this specific card earns across your actual monthly spend, annualized
     let annualPts = 0;
-    CATS.forEach(cat => {
-      const rate = c.rates[cat] || 1;
-      annualPts += (spend[cat] || 0) * 12 * rate;
+    SPEND_LINES.forEach(line => {
+      annualPts += (spend[line.key] || 0) * 12 * lineRate(c, line);
     });
     const earnedVal = annualPts * cpp;
     const net = earnedVal - c.fee;
@@ -358,10 +447,9 @@ function renderUtilCards() {
       ? portalSubTypes.map(t => 'Portal' + t) // travelSplit cards: only portal keys needed (Travel* keys come from travelSplit branch below)
       : (isPortalSplit ? portalSubTypes.map(t => 'Portal' + t) : (card.portalRate ? ['Portal'] : []));
     const travelSplitKeys = card.travelSplit ? ['Flights','Hotels','Cars'].map(t => 'Travel' + t) : [];
-    const subRateKeys = card.subRates
-      ? Object.keys(card.subRates).flatMap(cat => Object.keys(card.subRates[cat]).map(label => 'Sub_' + cat + '_' + label.replace(/[^a-zA-Z0-9]/g, '_')))
-      : [];
-    const allExtraKeys = [...portalKeys, ...travelSplitKeys, ...subRateKeys];
+    // Sub-type and home-merchant rows for this card (same lines the Optimizer uses)
+    const lineKeys = CATS.filter(cat => cat !== 'Travel').flatMap(cat => categoryLines(cat, [card]).map(l => l.key));
+    const allExtraKeys = [...portalKeys, ...travelSplitKeys, ...lineKeys];
 
     if (!cardSpend[cardName]) {
       cardSpend[cardName] = {};
@@ -438,26 +526,23 @@ function renderUtilCards() {
     });
 
     document.getElementById(`${blockId}-rows`).innerHTML = CATS.map(cat => {
-      if (card.subRates && card.subRates[cat]) {
-        // Generic named sub-rows for this category (e.g. Grocery -> Whole Foods / Other groceries)
-        let subHtml = '';
-        Object.keys(card.subRates[cat]).forEach(label => {
-          const subRate = card.subRates[cat][label];
-          const subKey = 'Sub_' + cat + '_' + label.replace(/[^a-zA-Z0-9]/g, '_');
-          subHtml += `
+      if (cat !== 'Travel') {
+        // One row per line: the category itself, or its sub-types, plus this card's home merchants
+        return categoryLines(cat, [card]).map(line => {
+          const rate = lineRate(card, line);
+          return `
       <div class="spend-row">
-        <span class="spend-label">${cat} — ${label}</span>
+        <span class="spend-label">${line.label}</span>
         <div class="util-spend-row-rate">
-          <span class="rate-badge ${rateClass(subRate)}">${subRate}x</span>
+          <span class="rate-badge ${rateClass(rate)}">${rate}x</span>
           <div class="spend-input-wrap">
             <span>$</span>
-            <input type="number" class="util-spend-input" data-card="${cardName}" data-cat="${subKey}" value="${cs[subKey] || 0}" min="0" step="10">
+            <input type="number" class="util-spend-input" data-card="${cardName}" data-cat="${line.key}" value="${cs[line.key] || 0}" min="0" step="10">
           </div>
         </div>
       </div>
     `;
-        });
-        return subHtml;
+        }).join('');
       }
       if (cat === 'Travel' && card.travelSplit) {
         // Direct Flights / Hotels / Cars rows
@@ -597,21 +682,15 @@ function renderUtilCards() {
 function renderUtilResult(card, cs, blockId) {
   let annualPts = 0;
   CATS.forEach(cat => {
-    if (cat === 'Travel' && card.travelSplit) return; // handled separately below
-    if (card.subRates && card.subRates[cat]) return; // handled separately below
-    const rate = card.rates[cat] || 1;
-    annualPts += (cs[cat] || 0) * 12 * rate;
-  });
-
-  if (card.subRates) {
-    Object.keys(card.subRates).forEach(cat => {
-      Object.keys(card.subRates[cat]).forEach(label => {
-        const subKey = 'Sub_' + cat + '_' + label.replace(/[^a-zA-Z0-9]/g, '_');
-        const subRate = card.subRates[cat][label];
-        annualPts += (cs[subKey] || 0) * 12 * subRate;
-      });
+    if (cat === 'Travel') {
+      if (card.travelSplit) return; // handled separately below
+      annualPts += (cs.Travel || 0) * 12 * (card.rates.Travel || 1);
+      return;
+    }
+    categoryLines(cat, [card]).forEach(line => {
+      annualPts += (cs[line.key] || 0) * 12 * lineRate(card, line);
     });
-  }
+  });
 
   if (card.travelSplit) {
     ['Flights','Hotels','Cars'].forEach(t => {
@@ -685,7 +764,13 @@ dataReady
   .then(data => {
     ({ categories: CATS, categoryColors: CAT_COLORS, loyaltyPrograms: LOYALTY_PROGRAMS,
        issuerNames: ISSUER_NAMES, cards: CARDS, valuations: VALUATION } = data);
+    SUB_CATEGORIES = data.subCategories || {};
     owned = new Set(CARDS.filter(c => c.owned).map(c => c.name));
+    Object.keys(DEFAULT_SPEND).forEach(k => {
+      const [cat, sub] = k.split('/');
+      spend[sub ? subKey(cat, sub) : k] = DEFAULT_SPEND[k];
+    });
+    SPEND_LINES = buildSpendLines();
     buildWallet();
     buildSpend();
     buildValuation();
