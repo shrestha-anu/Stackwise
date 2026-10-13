@@ -9,9 +9,7 @@ let CATS, CAT_COLORS, LOYALTY_PROGRAMS, ISSUER_NAMES, CARDS, VALUATION;
 // STATE
 // ─────────────────────────────────────────────────────────────
 let owned = new Set(); // filled from cards marked owned:true once data loads
-// Default monthly spend. "Category/Sub-type" entries are converted to spend-line keys once data loads.
-const DEFAULT_SPEND = { Dining:500, 'Grocery/Supermarkets':400, TravelFlights:150, TravelHotels:100, TravelCars:50, Gas:150, Streaming:50, 'Shopping/Online shopping':100, 'Shopping/In-store & other':100, Other:400 };
-let spend = {}; // keyed by spend line (see buildSpendLines); missing keys count as 0
+let spend = {}; // monthly spend keyed by spend line (see buildSpendLines); starts empty, missing keys count as 0
 let cpp = 0.018;
 let cardSpend = {}; // { cardName: { Dining: 0, Grocery: 0, ... } }
 
@@ -296,7 +294,10 @@ function recalc() {
   }).filter(x => x.uplift > 1).sort((a,b) => b.uplift - a.uplift).slice(0,4);
 
   const gapEl = document.getElementById('gap-container');
-  if (scored.length === 0) {
+  const hasSpend = SPEND_LINES.some(line => (spend[line.key] || 0) > 0);
+  if (!hasSpend) {
+    gapEl.innerHTML = `<div class="empty-gap"><p>Enter your monthly spend to see which cards would earn you more.</p></div>`;
+  } else if (scored.length === 0) {
     gapEl.innerHTML = `<div class="empty-gap"><p>You already own the top cards for your current spend profile. Try adjusting your spend or removing a card.</p></div>`;
   } else {
     gapEl.innerHTML = `<div class="gap-grid">${scored.map((s,i) => `
@@ -364,6 +365,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    // The wallet and monthly spend panels only feed the Optimizer, so hide them on other tabs
+    document.querySelector('.main').classList.toggle('tab-utilization', btn.dataset.tab === 'utilization');
     if (btn.dataset.tab === 'utilization') { populateUtilSelect(); renderUtilCards(); }
   });
 });
@@ -766,10 +769,6 @@ dataReady
        issuerNames: ISSUER_NAMES, cards: CARDS, valuations: VALUATION } = data);
     SUB_CATEGORIES = data.subCategories || {};
     owned = new Set(CARDS.filter(c => c.owned).map(c => c.name));
-    Object.keys(DEFAULT_SPEND).forEach(k => {
-      const [cat, sub] = k.split('/');
-      spend[sub ? subKey(cat, sub) : k] = DEFAULT_SPEND[k];
-    });
     SPEND_LINES = buildSpendLines();
     buildWallet();
     buildSpend();

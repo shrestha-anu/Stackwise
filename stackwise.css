@@ -717,3 +717,6 @@ footer p { font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', 
   .val-head-row, .val-data-row { grid-template-columns: 2fr 1fr 1fr 1fr; }
   .val-cell:nth-child(5), .val-cell:nth-child(6) { display: none; }
 }
+
+/* Sidebar panels that only apply to the Optimizer tab */
+.main.tab-utilization .optimizer-only { display: none; }
