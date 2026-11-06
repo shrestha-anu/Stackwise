@@ -4,170 +4,228 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stackwise — Credit Card Points Optimizer</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Instrument+Sans:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="stackwise.css">
 </head>
 <body>
+<!-- Icons shared by the intro guide and the Your inputs headings -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- Monthly spend: receipt -->
+  <symbol id="ic-spend" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.5 1.75h9v12.5l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1z"/><path d="M6 5h4M6 7.75h4M6 10.5h2.5"/>
+  </symbol>
+  <!-- Cards in your wallet: credit card -->
+  <symbol id="ic-wallet" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.75"/><path d="M1.75 6.5h12.5M4.5 10h2.5"/>
+  </symbol>
+  <!-- How you redeem points: gift -->
+  <symbol id="ic-redeem" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="5.5" width="12" height="3" rx=".75"/><path d="M3.25 8.5v5.75h9.5V8.5M8 5.5v8.75"/><path d="M8 5.5C6.5 5.5 4.75 5 4.75 3.6 4.75 2.4 6.75 2 8 5.5zM8 5.5c1.5 0 3.25-.5 3.25-1.9 0-1.2-2-1.6-3.25 1.9z"/>
+  </symbol>
+  <!-- Results: calculator (same as the Stackwise calculates heading) -->
+  <symbol id="ic-results" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M5.5 5h5M5.5 8h1M9.5 8h1M5.5 11h1M9.5 11h1"/>
+  </symbol>
+</svg>
 
-<nav>
-  <div class="wordmark"><span class="dot"></span>Stackwise</div>
-  <span class="nav-tag">points optimizer / beta</span>
-</nav>
+<header class="site-header">
+  <div class="header-inner">
+    <div class="wordmark"><span class="dot"></span>Stackwise</div>
+    <nav class="tab-bar" aria-label="Sections">
+      <button class="tab-btn active" data-tab="optimizer" aria-current="page">Optimizer</button>
+      <button class="tab-btn" data-tab="utilization">Card utilization</button>
+    </nav>
+    <span class="nav-tag">points optimizer / beta</span>
+  </div>
+</header>
 
-<div class="hero">
-  <p class="hero-eyebrow">// free tool</p>
-  <h1>Stop leaving points<br><em>on the table.</em></h1>
-  <p>Tell us which cards you own and how you spend. We'll show you exactly where you're under-earning — and which cards would fix it.</p>
+<!-- Intro guide: what Stackwise is for, then the steps in order -->
+<div class="guide-wrap">
+  <section class="guide" aria-labelledby="guide-title">
+    <div class="guide-intro">
+      <h2 id="guide-title">Get more from the cards <em>you already have</em></h2>
+      <p>Stackwise works out the best card for each purchase and what you'll earn in a year.</p>
+    </div>
+    <ol class="guide-steps" aria-label="How to use Stackwise">
+      <li><div class="guide-tile"><span class="tile-icon"><svg aria-hidden="true"><use href="#ic-spend"/></svg></span><div class="tile-text"><strong>1. Enter what you spend</strong><small>Rough monthly spend for groceries, dining, travel, etc.</small></div></div></li>
+      <li class="guide-arrow" aria-hidden="true">→</li>
+      <li><div class="guide-tile"><span class="tile-icon"><svg aria-hidden="true"><use href="#ic-wallet"/></svg></span><div class="tile-text"><strong>2. Add your cards</strong><small>Pick each credit card you have from the list.</small></div></div></li>
+      <li class="guide-arrow" aria-hidden="true">→</li>
+      <li><div class="guide-tile"><span class="tile-icon"><svg aria-hidden="true"><use href="#ic-redeem"/></svg></span><div class="tile-text"><strong>3. Pick how you redeem</strong><small>This sets what your points are worth.</small></div></div></li>
+      <li class="guide-arrow" aria-hidden="true">→</li>
+      <li><div class="guide-tile guide-results"><span class="tile-icon"><svg aria-hidden="true"><use href="#ic-results"/></svg></span><div class="tile-text"><strong>See your results ↓</strong><small>The best card for each category and each card's net value.</small></div></div></li>
+    </ol>
+  </section>
 </div>
 
-<div class="main">
+<main class="main">
 
-  <!-- ── Sidebar ── -->
-  <aside class="sidebar">
+  <!-- ── Inputs (top) ── -->
+  <section class="inputs" aria-label="Your inputs">
+    <div class="inputs-head">
+      <div class="inputs-title">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L5.5 13H3v-2.5z"></path><path d="M9.5 4l2.5 2.5"></path></svg>
+        <h2>Your inputs</h2>
+      </div>    </div>
 
-    <div class="panel optimizer-only">
-      <div class="panel-head"><h3>Your wallet</h3><span style="font-size:11px;color:var(--muted2)" id="owned-count">0 cards</span></div>
-      <div class="panel-body">
-        <select id="wallet-select" class="wallet-select">
-          <option value="">+ Add a card…</option>
-        </select>
-        <div class="wallet-chips" id="wallet-chips"></div>
+    <section class="input-section optimizer-only">
+      <div class="input-section-head"><h2><svg class="head-icon" aria-hidden="true"><use href="#ic-spend"/></svg>Monthly spend</h2><span id="spend-total">$0</span></div>
+      <div class="spend-tiles" id="spend-panel"></div>
+    </section>
+
+    <!-- Wallet and redemption side by side -->
+    <div class="input-pair">
+    <section class="input-section optimizer-only">
+      <div class="input-section-head"><h2><svg class="head-icon" aria-hidden="true"><use href="#ic-wallet"/></svg>Cards in your wallet</h2><span id="owned-count">0 cards</span></div>
+      <div class="wallet-list" id="wallet-chips"></div>
+      <div class="input-section-foot">
+        <label for="card-picker-input" class="sr-only">Add a card to your wallet</label>
+        <div class="card-picker" id="card-picker">
+          <div class="card-picker-field">
+            <input id="card-picker-input" type="text" role="combobox" autocomplete="off" spellcheck="false"
+              placeholder="+ Add a card — type or pick" aria-autocomplete="list" aria-expanded="false" aria-controls="card-picker-list">
+            <button type="button" class="card-picker-toggle" tabindex="-1" aria-label="Show all cards">
+              <svg aria-hidden="true" width="12" height="8" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <ul class="card-picker-list" id="card-picker-list" role="listbox" aria-label="Cards" hidden></ul>
+        </div>
+        <div id="new-rows-note" role="status" aria-live="polite"></div>
       </div>
-    </div>
+    </section>
 
-    <div class="panel optimizer-only">
-      <div class="panel-head"><h3>Monthly spend</h3></div>
-      <div class="panel-body" id="spend-panel"></div>
-    </div>
-
-    <div class="panel" style="animation-delay:.2s">
-      <div class="panel-head"><h3>Assumptions</h3></div>
-      <div class="panel-body">
-        <div class="spend-row">
-          <span class="spend-label">Cents per point (blended)</span>
-          <div class="spend-input-wrap">
-            <input type="number" id="cpp-input" value="1.8" min="0.5" max="5" step="0.1" style="width:60px">
-            <span>¢</span>
+    <section class="input-section">
+      <div class="input-section-head">
+        <div class="head-with-info">
+          <h2><svg class="head-icon" aria-hidden="true"><use href="#ic-redeem"/></svg>How you redeem points</h2>
+          <button type="button" class="info-btn" id="val-source-btn" aria-label="Where these values come from" aria-expanded="false" aria-controls="val-source">i</button>
+          <div class="info-pop" id="val-source" role="note" aria-labelledby="val-source-title" hidden>
+            <div class="info-pop-title" id="val-source-title">Where point values come from</div>
+            <ul>
+              <li>Transfer partner, airline and hotel values: NerdWallet, October 2026.</li>
+              <li>Cash back and bank travel portal values: each bank's website, November 2026.</li>
+              <li>Capital One does not publish a cash back value, so 1¢ is used.</li>
+            </ul>
           </div>
         </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.6">1.0¢ = cash back. 1.5–2¢ = travel portal. 2–4¢ = transfer partners (business class).</p>
       </div>
+      <div class="input-section-foot">
+        <details class="redeem-help">
+          <summary>Ways to redeem points</summary>
+          <dl>
+            <dt>Cash back</dt>
+            <dd>Redeem points as a statement credit or deposit. Simplest, and usually the lowest value.</dd>
+            <dt>Bank travel portal</dt>
+            <dd>Book flights or hotels through the bank's travel site (e.g. Chase Travel), paying with points at a set rate.</dd>
+            <dt>Transfer partners</dt>
+            <dd>Move points to an airline or hotel partner and book flights or nights with them. Usually the most value, but takes a little work. For some banks the value depends on which card you have.</dd>
+            <dt>Loyalty programs</dt>
+            <dd>Loyalty points from a co-branded card (e.g. Delta miles, Marriott points) are spent on bookings with that brand and its partners.</dd>
+          </dl>
+        </details>
+        <div class="redeem-list" id="redeem-list"></div>
+      </div>
+    </section>
+    </div><!-- /.input-pair -->
+  </section>
+
+  <!-- Summary banner, under the inputs: sticks to the top of the screen once you scroll past it -->
+  <section class="summary-wrap">
+    <div class="summary">
+      <h1 id="summary-title">Add your cards and spend to see what you can earn.</h1>
     </div>
+  </section>
 
-  </aside>
-
-  <!-- ── Main content ── -->
-  <div class="content">
-
-    <div class="tab-bar">
-      <button class="tab-btn active" data-tab="optimizer">Optimizer</button>
-      <button class="tab-btn" data-tab="utilization">Card Utilization</button>
-    </div>
+  <!-- ── Results (below) ── -->
+  <div class="results">
 
     <div class="tab-panel active" id="tab-optimizer">
-
-    <!-- KPIs -->
-    <div class="kpi-strip">
-      <div class="kpi">
-        <label>Annual points</label>
-        <div class="val g" id="k-pts">—</div>
-        <div class="sub">your wallet</div>
-      </div>
-      <div class="kpi">
-        <label>Est. value</label>
-        <div class="val g" id="k-val">—</div>
-        <div class="sub" id="k-cpp-sub">@ 1.8¢/pt</div>
-      </div>
-      <div class="kpi">
-        <label>Gap (points)</label>
-        <div class="val a" id="k-gap-pts">—</div>
-        <div class="sub">left on table</div>
-      </div>
-      <div class="kpi">
-        <label>Gap (value)</label>
-        <div class="val r" id="k-gap-val">—</div>
-        <div class="sub">annual opportunity</div>
-      </div>
-    </div>
-
-    <!-- Optimizer table -->
-    <div>
-      <div class="section-label">Best card per category</div>
-      <div class="table-panel">
-        <table>
-          <thead>
-            <tr>
-              <th>Category</th>
-              <th>Monthly $</th>
-              <th>Best card (owned)</th>
-              <th>Rate</th>
-              <th>Annual pts</th>
-              <th>Best available</th>
-              <th>Rate</th>
-              <th>Gap</th>
-            </tr>
-          </thead>
-          <tbody id="opt-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Fee coverage -->
-    <div>
-      <div class="section-label">Annual fee coverage</div>
-      <div class="fee-grid" id="fee-grid"></div>
-    </div>
-
-    <!-- Breakdown + Gap side by side -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div>
-        <div class="section-label">Points by category</div>
-        <div class="breakdown-panel" id="breakdown-panel"></div>
-      </div>
-      <div>
-        <div class="section-label">Gap analysis</div>
-        <div id="gap-container"></div>
-      </div>
-    </div>
-
-    <!-- Valuation -->
-    <div>
-      <div class="section-label">Points valuation — cents per point</div>
-      <div class="val-panel">
-        <div class="val-head-row">
-          <div class="val-cell head">Currency</div>
-          <div class="val-cell head">Cash back</div>
-          <div class="val-cell head">Travel portal</div>
-          <div class="val-cell head">Transfer eco.</div>
-          <div class="val-cell head">Transfer biz.</div>
-          <div class="val-cell head">Your balance</div>
+      <section>
+        <div class="inputs-title calc-title">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="1.5"></rect><path d="M5.5 5h5M5.5 8h1M9.5 8h1M5.5 11h1M9.5 11h1"></path></svg>
+          <h2>Stackwise calculates</h2>
         </div>
-        <div id="val-rows"></div>
-      </div>
-    </div>
+        <div class="empty-gap hold-note" id="hold-note"></div>
+        <details class="calc-section">
+          <summary class="section-head"><h2>Cards to use for each spend category</h2></summary>
+          <div class="card-guide" id="card-guide"></div>
+        </details>
+      </section>
+
+      <section>
+        <details class="calc-section">
+          <summary class="section-head"><h2>Net value per card</h2></summary>
+          <div class="fee-grid" id="fee-grid"></div>
+        </details>
+      </section>
+
+      <section>
+        <details class="calc-section">
+        <summary class="section-head"><h2>Points earned per category</h2></summary>
+        <div class="table-panel">
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Monthly spend</th>
+                <th>Use this card</th>
+                <th>Rate</th>
+                <th>Annual pts</th>
+                <th>Multiplier</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody id="opt-tbody"></tbody>
+          </table>
+        </div>
+        </details>
+      </section>
+
+      <section>
+        <details class="calc-section">
+          <summary class="section-head"><h2>Cards that would earn you more</h2></summary>
+          <div id="gap-container"></div>
+        </details>
+      </section>
 
     </div><!-- /#tab-optimizer -->
 
     <div class="tab-panel" id="tab-utilization">
+      <div class="results-head">
+        <div class="inputs-title calc-title">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="1.5"></rect><path d="M5.5 5h5M5.5 8h1M9.5 8h1M5.5 11h1M9.5 11h1"></path></svg>
+          <h2>Stackwise calculates</h2>
+        </div>
+        <div class="section-head"><h2>Card utilization</h2></div>
+      </div>
+
       <div id="util-cards-container"></div>
 
-      <div class="section-label" style="margin-top:24px">Add a card to review</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <select id="util-bank-select" class="util-card-select" style="flex:1;min-width:160px">
-          <option value="">Select a bank…</option>
-        </select>
-        <select id="util-card-select" class="util-card-select" style="flex:2;min-width:220px" disabled>
-          <option value="">Select a bank first…</option>
-        </select>
-      </div>
+      <section>
+        <div class="section-head"><h2>Add a card to review</h2></div>
+        <label for="util-picker-input" class="sr-only">Add a card to review</label>
+        <div class="card-picker util-picker" id="util-picker">
+          <div class="card-picker-field">
+            <input id="util-picker-input" type="text" role="combobox" autocomplete="off" spellcheck="false"
+              placeholder="+ Review a card — type or pick" aria-autocomplete="list" aria-expanded="false" aria-controls="util-picker-list">
+            <button type="button" class="card-picker-toggle" tabindex="-1" aria-label="Show all cards">
+              <svg aria-hidden="true" width="12" height="8" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <ul class="card-picker-list" id="util-picker-list" role="listbox" aria-label="Cards" hidden></ul>
+        </div>
+      </section>
     </div><!-- /#tab-utilization -->
 
   </div>
-</div>
+</main>
 
-<footer>
-  <p>Stackwise — built for credit nerds</p>
-  <p>Valuations based on TPG / Bankrate estimates · Updated manually · Not financial advice</p>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <span>Stackwise — built for credit nerds</span>
+    <span>Points values from NerdWallet (Oct 2026) and bank rates · Updated manually · Not financial advice</span>
+  </div>
 </footer>
 
 <script src="stackwise-data.js"></script>
