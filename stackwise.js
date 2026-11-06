@@ -8,19 +8,12 @@ let CATS, CAT_COLORS, LOYALTY_PROGRAMS, ISSUER_NAMES, CARDS, VALUATION;
 // ─────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────
-let owned = new Set(); // filled from cards marked owned:true once data loads
-// Monthly spend keyed by spend line (see buildSpendLines); missing keys count as 0. Starts with a
-// sample profile ($4,700/month) that goes with the sample wallet (cards marked owned:true in the
-// data), so the Optimizer shows results right away. Merch_ keys are store rows those cards add.
-let spend = {
-  Dining: 500,
-  Sub_Grocery_Supermarkets: 200, Merch_Whole_Foods: 600, Sub_Grocery_Online_grocery: 200, Sub_Grocery_Wholesale_clubs: 600,
-  TravelFlights: 500, TravelHotels: 400, TravelCars: 100,
-  Gas: 400,
-  Streaming: 100,
-  Sub_Shopping_Online_shopping: 200, Merch_Amazon___Audible: 300, 'Sub_Shopping_In_store___other': 200,
-  Other: 400
-};
+// Every input starts blank: an empty wallet, no spend, no redemption choices. What the user enters is
+// saved in the browser and comes back next time (see SAVED INPUTS).
+let owned = new Set(); // wallet card names, in the order they were added (a card's dot color follows it)
+// Monthly spend keyed by spend line (see buildSpendLines); missing keys count as 0 and show as blank.
+// Merch_ keys are store rows the wallet's cards add.
+let spend = {};
 // Ways to redeem bank points, one valuation table column each. Airline and hotel points have one
 // set value each (LOYALTY_PROGRAMS), so there's nothing to choose for them.
 const REDEEM_STYLES = { sc:'cash back', portal:'bank travel portal', transfer:'transfer partners' };
@@ -28,16 +21,31 @@ const REDEEM_STYLES = { sc:'cash back', portal:'bank travel portal', transfer:'t
 const titleCase = s => s.replace(/\b\w/g, ch => ch.toUpperCase());
 
 // How the user redeems each points currency (a valuation table column): { program: 'sc' | 'portal' | 'transfer' }.
-// Starts with choices for the sample wallet's currencies. A currency added later has no choice, and
-// the Optimizer waits until every currency in the wallet has one.
-let redeemByProgram = { ur: 'portal', mr: 'portal' };
+// Starts with no choices. A currency without one shows "Select One", and the Optimizer waits until
+// every currency in the wallet has one.
+// The two tabs are independent: Points Optimizer uses the wallet and redeemByProgram; Card utilization
+// uses its own cards (cardsUnderReview) and utilRedeemByProgram. Nothing entered on one tab changes
+// the other. Functions that value points take a `tab` ('opt' by default, or 'util').
+let redeemByProgram = {};
+let utilRedeemByProgram = {};
+const TAB_CARDS = { opt: () => owned, util: () => cardsUnderReview };
+const TAB_CHOICES = { opt: () => redeemByProgram, util: () => utilRedeemByProgram };
+// A tab's choice is forgotten once none of that tab's cards uses the currency, so a card added later
+// always starts at "Select One". Called on load and whenever a card is removed.
+function forgetUnusedChoices() {
+  ['opt', 'util'].forEach(tab => {
+    const inUse = new Set([...TAB_CARDS[tab]()].map(n => CARDS.find(c => c.name === n)).filter(Boolean).map(c => cardProgram(c, tab).program));
+    const choices = TAB_CHOICES[tab]();
+    Object.keys(choices).forEach(p => { if (!inUse.has(p)) delete choices[p]; });
+  });
+}
 // Only for valuing cards outside the wallet in "Cards that would earn you more" when their
 // currency hasn't been chosen.
 const UNCHOSEN_STYLE = 'transfer';
 
-// Cash back cards whose rewards move into a points currency when the wallet has a card that earns
-// it, e.g. Freedom Unlimited points into a Sapphire's Ultimate Rewards balance. Anchors are listed
-// best first; the first one in the wallet is named.
+// Cash back cards whose rewards move into a points currency when the same tab has a card that earns
+// it (the wallet, or the cards under review), e.g. Freedom Unlimited points into a Sapphire's Ultimate
+// Rewards balance. Anchors are listed best first; the first one found is named.
 const POOLS = [
   { program: 'ur', joiners: ['Chase Freedom Unlimited', 'Chase Freedom Flex'], anchors: ['Chase Sapphire Reserve', 'Chase Sapphire Preferred'] },
   { program: 'thankyou', joiners: ['Citi Double Cash'], anchors: ['Citi Strata Elite', 'Citi Strata Premier'] },
@@ -46,9 +54,9 @@ const POOLS = [
 ];
 
 // The currency a card's rewards end up in: its own program, or a pooled one (and the card that allows it).
-function cardProgram(card) {
+function cardProgram(card, tab = 'opt') {
   const pool = POOLS.find(p => p.joiners.includes(card.name));
-  const anchor = pool && pool.anchors.find(name => owned.has(name));
+  const anchor = pool && pool.anchors.find(name => TAB_CARDS[tab]().has(name));
   return anchor ? { program: pool.program, via: anchor } : { program: card.program };
 }
 
@@ -57,11 +65,11 @@ function styleLabel(row, style) { return REDEEM_STYLES[style]; }
 // The valuation row for a points currency. Some currencies have one row per group of cards (e.g.
 // Chase Ultimate Rewards transfer at 1.8¢ with a Sapphire Reserve, 1.4¢ with a Sapphire Preferred),
 // listed best first. Points in one balance can be redeemed through the best card that holds it, so
-// the first row matching the given cards or any wallet card wins. A row without `cards` matches any.
-function valuationRow(program, names = []) {
+// the first row matching the given cards or any of the tab's cards wins. A row without `cards` matches any.
+function valuationRow(program, names = [], tab = 'opt') {
   const rows = VALUATION.filter(v => v.program === program);
   if (!rows.length) return null;
-  const have = new Set([...names, ...owned]);
+  const have = new Set([...names, ...TAB_CARDS[tab]()]);
   return rows.find(v => !v.cards || v.cards.some(n => have.has(n))) || rows[rows.length - 1];
 }
 
@@ -72,13 +80,13 @@ function valuationRow(program, names = []) {
 //    the style chosen in redeemByProgram. `pending` is true until a style is chosen; the value is
 //    then UNCHOSEN_STYLE's, used only for suggesting cards outside the wallet.
 //  - Airline, hotel and other co-brand programs: the fixed value in LOYALTY_PROGRAMS.
-function cardCpp(card) {
+function cardCpp(card, tab = 'opt') {
   if (!card) return { cpp: 0.01, label: 'cash back, fixed' };
-  const { program, via } = card.name ? cardProgram(card) : { program: card.program };
+  const { program, via } = card.name ? cardProgram(card, tab) : { program: card.program };
   if (card.currency === 'cash' && program === card.program) return { cpp: 0.01, label: 'cash back, fixed' };
-  const row = valuationRow(program, [card.name, via].filter(Boolean));
+  const row = valuationRow(program, [card.name, via].filter(Boolean), tab);
   if (row) {
-    const chosen = redeemByProgram[program];
+    const chosen = TAB_CHOICES[tab]()[program];
     let style = chosen || UNCHOSEN_STYLE;
     if (row[style] == null) {
       style = Object.keys(REDEEM_STYLES).filter(k => row[k] != null).sort((a, b) => row[b] - row[a])[0];
@@ -93,8 +101,8 @@ function cardCpp(card) {
 function fmtCpp(cpp) { return `${+(cpp * 100).toFixed(2)}¢/pt`; }
 
 // Names of the points currencies among these cards that don't have a redemption choice yet.
-function pendingCurrencies(cards) {
-  const programs = new Set(cards.map(cardCpp).filter(v => v.pending).map(v => v.program));
+function pendingCurrencies(cards, tab = 'opt') {
+  const programs = new Set(cards.map(c => cardCpp(c, tab)).filter(v => v.pending).map(v => v.program));
   return [...new Set(VALUATION.filter(v => programs.has(v.program)).map(v => v.name))];
 }
 let cardSpend = {}; // { cardName: { Dining: 0, Grocery: 0, ... } }
@@ -103,14 +111,19 @@ let cardSpend = {}; // { cardName: { Dining: 0, Grocery: 0, ... } }
 // SPEND LINES
 // ─────────────────────────────────────────────────────────────
 // Both tabs use the same breakdown:
-//  - Travel is split into Flights / Hotels / Cars. How to book (direct or through a bank travel
-//    site) isn't an input: the Optimizer works out the better way for each type (see travelOptions).
+//  - Travel is split into Flights / Hotels / Cars / Transit. How to book (direct or through a bank
+//    travel site) isn't an input: the Optimizer works out the better way for each type (see
+//    travelOptions). Rideshare & transit can't be booked through a travel site, so it's direct only.
 //  - Categories listed in SUB_CATEGORIES (e.g. Grocery, Shopping) are split by type of store.
-//  - A card's home-merchant rates (card.merchantRates, e.g. Prime Visa at Amazon) add a row for
-//    that merchant under its parent line, only for the cards passed in (the wallet, or one card).
-const TRAVEL_TYPES = ['Flights','Hotels','Cars'];
-// What each travel type is called on screen. "Cars" stays the key in the data and saved spend.
-const TRAVEL_LABELS = { Flights: 'Flights', Hotels: 'Hotels', Cars: 'Car rentals' };
+//  - A card's brand and store rates (card.merchantRates, e.g. Prime Visa at Amazon, Marriott hotels,
+//    Lyft) don't add rows by default: a grey line under the parent row says whether that card is the
+//    best one there, and "Split out" adds the brand row (see "Brands: grey line and split out").
+const TRAVEL_TYPES = ['Flights','Hotels','Cars','Transit'];
+const PORTAL_TYPES = ['Flights','Hotels','Cars']; // travel that can be booked through a bank travel site
+// What each travel type is called on screen. "Cars" and "Transit" are the keys in the data and saved spend.
+const TRAVEL_LABELS = { Flights: 'Flights', Hotels: 'Hotels', Cars: 'Car rentals', Transit: 'Rideshare & transit' };
+// A brand's row names the type too: "Delta flights", "Marriott hotels", "Lyft rides"
+const TRAVEL_NOUNS = { Flights: 'flights', Hotels: 'hotels', Cars: 'car rentals', Transit: 'rides' };
 const CHANNELS = ['direct', 'portal'];
 let SUB_CATEGORIES = {}; // { Grocery: [{ name, defaultsTo? }, ...] } from data
 let SPEND_LINES = [];    // Optimizer lines, rebuilt whenever the wallet changes
@@ -129,17 +142,17 @@ function merchantLines(path, parent, cards) {
   return lines;
 }
 
-// Lines for one non-travel category, with merchant rows for the given cards' home merchants.
-// Merchant rows come first; the line they belong to follows as "All other …".
-function categoryLines(cat, cards) {
+// Lines for one non-travel category, each after the store rows split out of it (e.g. Whole Foods,
+// then All other supermarkets).
+function categoryLines(cat, cards, splits = splitBrands) {
   const subs = SUB_CATEGORIES[cat];
   const baseLines = subs
     ? subs.map(s => ({ key:subKey(cat, s.name), cat, sub:s.name, label:`${cat} — ${s.name}` }))
     : [{ key:cat, cat, label:cat }];
-  return baseLines.flatMap(line => [...merchantLines(line.sub ? `${cat}/${line.sub}` : cat, line, cards), line]);
+  return baseLines.flatMap(line => [...merchantLines(brandPath(line), line, cards).filter(l => splits.has(l.merchant)), line]);
 }
 
-// Travel lines: Flights / Hotels / Cars, each after the brand rows split out of it (e.g. Hilton
+// Travel lines: Flights / Hotels / Cars / Transit, each after the brand rows split out of it (e.g. Hilton
 // hotels, then All other hotels), then brand rows that aren't one travel type (e.g. cruise lines).
 // `splits` is the set of brands split out: splitBrands on the Optimizer, one card's set on Card utilization.
 function travelLines(cards, splits = splitBrands) {
@@ -150,54 +163,63 @@ function travelLines(cards, splits = splitBrands) {
   return [...lines, ...merchantLines('Travel', { cat:'Travel' }, cards)];
 }
 
-// ── Airline and hotel brands: grey line and split out ──────────────────────────────────────
-// Airline and hotel brands (on Flights / Hotels) don't get a Monthly spend row of their own. Under the
-// travel type's card, a grey line says what the brand's card earns there when it beats your other
-// cards ("At Marriott hotels: 6x @ 0.7¢ with … · Split out"), or which card is still best. "Split out"
-// adds the brand row with a small amount box; what goes in it is taken out of the travel type.
-const splitBrands = new Set(); // Optimizer: merchant names split out of their travel type
+// ── Brands: grey line and split out ──────────────────────────────────────
+// Brands and stores with their own card rate (airlines, hotels, Lyft, Whole Foods, Amazon, Costco…)
+// don't get a Monthly spend row of their own. Under the parent row's card, a grey line says what the
+// brand's card earns there when it beats your other cards ("At Marriott hotels: 6x @ 0.7¢ with … ·
+// Split out"), or which card is still best. "Split out" adds the brand row with its own amount box
+// (it doesn't change the parent row's amount; Undo split adds it back in). Cruise lines aren't one travel type, so they keep
+// their own row.
+const splitBrands = new Set(); // Optimizer: merchant names split out of their parent row
 const utilSplits = {};         // Card utilization: card name → Set of merchant names
 const utilSplitSet = name => utilSplits[name] || (utilSplits[name] = new Set());
 
-// Brands on a travel type that the given cards have but that aren't split out
+// Where a line's brands sit in the data (merchantRates `line`): "Travel/Hotels", "Grocery/Supermarkets", "Dining"
+function brandPath(line) {
+  return line.travelType ? `Travel/${line.travelType}` : line.sub ? `${line.cat}/${line.sub}` : line.cat;
+}
+// The spend key of the row a brand is split out of (its "All other …" row)
+function parentKey(line) {
+  return line.travelType ? 'Travel' + line.travelType : line.sub ? subKey(line.cat, line.sub) : line.cat;
+}
+// A brand row that can be split out and folded back (not a cruise line, which keeps its own row)
+const isSplitBrand = line => !!line.merchant && (!!line.travelType || line.cat !== 'Travel');
+
+// Brands on a row that the given cards have but that aren't split out
 function brandNoteLines(line, cards, splits = splitBrands) {
-  if (!line.travelType || line.merchant) return [];
-  return merchantLines(`Travel/${line.travelType}`, line, cards).filter(l => !splits.has(l.merchant));
+  if (line.merchant || (line.cat === 'Travel' && !line.travelType)) return [];
+  return merchantLines(brandPath(line), line, cards).filter(l => !splits.has(l.merchant));
 }
 // What each card earns per $1 at a brand, best first (a tie goes to the brand's own card)
-function brandRanking(brandLine, cards) {
+function brandRanking(brandLine, cards, tab = 'opt') {
   return cards.map(c => {
-    const o = bestTravelOption(c, brandLine);
-    return { card: c, rate: o.rate, value: o.rate * cardCpp(c).cpp, brand: !!merchantRate(c, brandLine) };
+    const rate = brandLine.travelType ? bestTravelOption(c, brandLine).rate : lineRate(c, brandLine);
+    return { card: c, rate, value: rate * cardCpp(c, tab).cpp, brand: !!merchantRate(c, brandLine) };
   }).filter(x => x.rate > 0).sort((a, b) => b.value - a.value || b.brand - a.brand);
 }
-// The grey line. `self` (Card utilization) is the card under review, named "this card".
+// The grey line. `self` (Card utilization) is the card under review, named "this card"; there the
+// line only looks at that card, not the wallet.
 function brandNote(brandLine, cards, attrs = '', self = null) {
-  const rank = brandRanking(brandLine, cards);
+  const tab = self ? 'util' : 'opt';
+  const rank = brandRanking(brandLine, cards, tab);
   const mine = rank.find(x => x.brand);
   if (!mine) return '';
   const name = c => c === self ? 'this card' : c.name;
-  const where = shortLabel(brandLine);
+  const where = (brandLine.travelType === 'Transit' ? 'On ' : 'At ') + shortLabel(brandLine); // "On Lyft rides", "At Whole Foods"
   if (rank[0] === mine) {
-    return `<span class="other-way brand-way">At ${where}: ${mine.rate}x @ ${+(cardCpp(mine.card).cpp * 100).toFixed(2)}¢ with ${name(mine.card)} · <button type="button" class="brand-split" data-brand="${brandLine.merchant}" ${attrs}>Split out</button></span>`;
+    return `<span class="other-way brand-way">${where}: ${mine.rate}x @ ${+(cardCpp(mine.card, tab).cpp * 100).toFixed(2)}¢ with ${name(mine.card)} · <button type="button" class="brand-split" data-brand="${brandLine.merchant}" ${attrs}>Split out</button></span>`;
   }
-  return `<span class="other-way brand-way">At ${where}: ${name(rank[0].card)} is still best</span>`;
+  return `<span class="other-way brand-way">${where}: ${name(rank[0].card)} is still best</span>`;
 }
 
-// Move a brand's amount back into its travel type
-function foldBack(brand, travelType, store) {
-  const key = merchKey(brand), parent = 'Travel' + travelType;
+// Move a brand's amount back into its parent row (`parent` is that row's spend key)
+function foldBack(brand, parent, store) {
+  const key = merchKey(brand);
   store[parent] = (store[parent] || 0) + (store[key] || 0);
   delete store[key];
 }
-// Set a brand's amount. The change comes out of (or goes back to) its travel type's "All other" amount,
-// which never goes below $0. There's no cap: past what All other holds, the travel total grows.
-function setBrandAmount(line, value, store) {
-  const parent = 'Travel' + line.travelType;
-  const x = Math.max(0, value), change = x - (store[line.key] || 0);
-  store[line.key] = x; store[parent] = Math.max(0, (store[parent] || 0) - change);
-  return x;
-}
+// A split-out brand's amount and its "All other" amount are set separately, wherever they're typed
+// (Monthly spend, Points earned per category, Card utilization): neither changes the other.
 
 document.addEventListener('click', e => {
   const split = e.target.closest('.brand-split'), undo = e.target.closest('.brand-unsplit');
@@ -206,27 +228,26 @@ document.addEventListener('click', e => {
   if (card) { // Card utilization
     const cs = cardSpend[card] = cardSpend[card] || {};
     if (split) { utilSplitSet(card).add(brand); cs[key] = 0; }
-    else { utilSplitSet(card).delete(brand); foldBack(brand, btn.dataset.type, cs); }
+    else { utilSplitSet(card).delete(brand); foldBack(brand, btn.dataset.parent, cs); }
     renderUtilCards();
     const input = split && document.querySelector(`.util-spend-input[data-card="${card}"][data-cat="${key}"]`);
     if (input) { input.focus(); input.select(); }
     return;
   }
   if (split) { splitBrands.add(brand); spend[key] = 0; }
-  else { splitBrands.delete(brand); foldBack(brand, btn.dataset.type, spend); }
+  else { splitBrands.delete(brand); foldBack(brand, btn.dataset.parent, spend); }
   refreshSpendLines(); recalc();
   const input = split && document.getElementById('opt-split-' + key);
   if (input) { input.focus(); input.select(); }
 });
-// The amount boxes in Points earned per category (a split-out brand and its "All other" row). Monthly
-// spend is redrawn to match. The table is redrawn as you type, so focus comes back.
+// The amount boxes in Points earned per category (a split-out brand and its "All other" row). Each box
+// sets only its own amount: typing in the brand box doesn't change "All other". Monthly spend is
+// redrawn to match. The table is redrawn as you type, so focus comes back.
 document.addEventListener('input', e => {
   const input = e.target.closest('.split-input');
   if (!input) return;
   const line = SPEND_LINES.find(l => l.key === input.dataset.key);
-  const v = parseInt(input.value.replace(/[^0-9]/g, '')) || 0;
-  if (line.merchant) setBrandAmount(line, v, spend);
-  else spend[line.key] = v;
+  spend[line.key] = parseInt(input.value.replace(/[^0-9]/g, '')) || 0;
   buildSpend(); recalc();
   const again = document.getElementById(input.id);
   if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
@@ -235,7 +256,7 @@ document.addEventListener('input', e => {
 
 // All spend lines for the given cards (the wallet in the Optimizer, one card in Card utilization).
 function buildSpendLines(cards = CARDS.filter(c => owned.has(c.name)), splits = splitBrands) {
-  return CATS.flatMap(cat => cat === 'Travel' ? travelLines(cards, splits) : categoryLines(cat, cards));
+  return CATS.flatMap(cat => cat === 'Travel' ? travelLines(cards, splits) : categoryLines(cat, cards, splits));
 }
 
 function merchantRate(c, line) {
@@ -249,7 +270,7 @@ function travelOptions(c, line) {
   const t = line.travelType;
   const direct = brand ? brand.rate : (c.travelSplit ? c.travelSplit[t] : (c.rates.Travel ?? 1));
   const opts = [{ channel:'direct', rate:direct, label:brand ? `${line.merchant} direct` : 'Book direct' }];
-  if (c.portalRate && c.portalLabel && c.portalLabel !== 'Direct only') {
+  if (PORTAL_TYPES.includes(t) && c.portalRate && c.portalLabel && c.portalLabel !== 'Direct only') {
     const p = typeof c.portalRate === 'object' ? c.portalRate[t] : c.portalRate;
     opts.push({ channel:'portal', rate:p !== undefined ? p : (c.travelSplit ? c.travelSplit[t] : direct), label:c.portalLabel });
   }
@@ -276,7 +297,7 @@ function lineRate(c, line) {
   // No home-merchant rate on this card: it earns its normal rate for the parent line.
   // Brand travel that isn't one travel type (e.g. a cruise) earns a card's general direct travel rate,
   // so a bonus on only some types (e.g. Amex Platinum's 5X on flights) doesn't count: use the lowest.
-  if (line.cat === 'Travel') return c.travelSplit ? Math.min(...TRAVEL_TYPES.map(t => c.travelSplit[t])) : base;
+  if (line.cat === 'Travel') return c.travelSplit ? Math.min(...PORTAL_TYPES.map(t => c.travelSplit[t])) : base;
   if (!line.sub) return base;
   const subs = c.subRates && c.subRates[line.cat];
   if (subs && subs[line.sub] !== undefined) return subs[line.sub];
@@ -292,9 +313,9 @@ const removedRows = new Map(); // line key → line
 function refreshSpendLines() {
   const before = SPEND_LINES;
   SPEND_LINES = buildSpendLines();
-  // A split-out brand whose card left the wallet goes back into its travel type
-  before.filter(l => l.merchant && l.travelType && !SPEND_LINES.some(n => n.key === l.key))
-    .forEach(l => { foldBack(l.merchant, l.travelType, spend); splitBrands.delete(l.merchant); });
+  // A split-out brand whose card left the wallet goes back into its parent row
+  before.filter(l => isSplitBrand(l) && !SPEND_LINES.some(n => n.key === l.key))
+    .forEach(l => { foldBack(l.merchant, parentKey(l), spend); splitBrands.delete(l.merchant); });
   const keys = new Set(SPEND_LINES.map(l => l.key));
   freshKeys = new Set(SPEND_LINES.filter(l => !before.some(b => b.key === l.key)).map(l => l.key));
   before.filter(l => !keys.has(l.key) && spend[l.key]).forEach(l => removedRows.set(l.key, l));
@@ -347,7 +368,7 @@ function renderNewRowsNote() {
 // "How you redeem points": one dropdown per points currency on the current tab's cards (the wallet
 // on the Optimizer, the cards under review on Card utilization), with only the ways that currency
 // can be redeemed and their value, starting at "Select One"; then the fixed-value cards as plain text.
-// Choices are shared, so a currency picked on one tab is already picked on the other.
+// Each tab keeps its own choices: a currency picked on one tab isn't picked on the other.
 // An "i" button that opens a small note; closes on a second click, a click elsewhere or Escape.
 function initInfoButton(btnId, popId) {
   const btn = document.getElementById(btnId), pop = document.getElementById(popId);
@@ -369,12 +390,13 @@ function redeemKind(c) {
 function renderRedeemList() {
   const el = document.getElementById('redeem-list');
   const onUtil = document.querySelector('.main').classList.contains('tab-utilization');
-  const cards = [...(onUtil ? cardsUnderReview : owned)].map(name => CARDS.find(c => c.name === name)).filter(Boolean);
-  const dot = c => owned.has(c.name) ? cardDot(c) : ''; // wallet colors only
+  const tab = onUtil ? 'util' : 'opt', choices = TAB_CHOICES[tab]();
+  const cards = [...TAB_CARDS[tab]()].map(name => CARDS.find(c => c.name === name)).filter(Boolean);
+  const dot = c => onUtil ? '' : cardDot(c); // wallet colors, on the wallet's tab only
   const currencies = new Map(); // program → { cards: [{ card, via }] }
   const fixed = [];
   cards.forEach(c => {
-    const { program, via } = cardProgram(c);
+    const { program, via } = cardProgram(c, tab);
     const hasRow = !(c.currency === 'cash' && program === c.program) && VALUATION.some(v => v.program === program);
     if (!hasRow) { fixed.push(c); return; }
     if (!currencies.has(program)) currencies.set(program, { cards: [] });
@@ -382,8 +404,8 @@ function renderRedeemList() {
   });
   el.innerHTML = [...currencies].map(([program, { cards }]) => {
     // The values for the best card holding this currency (e.g. Sapphire Reserve over Preferred)
-    const row = valuationRow(program, cards.flatMap(({ card, via }) => [card.name, via]).filter(Boolean));
-    const current = redeemByProgram[program];
+    const row = valuationRow(program, cards.flatMap(({ card, via }) => [card.name, via]).filter(Boolean), tab);
+    const current = choices[program];
     const keys = Object.keys(REDEEM_STYLES).filter(k => row[k] != null);
     const options = (current ? '' : '<option value="" selected disabled>Select One</option>') + keys.map(k => {
       return `<option value="${k}" ${k === current ? 'selected' : ''}>${titleCase(styleLabel(row, k))} · ${row[k].toFixed(2)}¢</option>`;
@@ -397,10 +419,10 @@ function renderRedeemList() {
     </div>`;
   }).join('') + (fixed.length ? `<div class="redeem-fixed">
       <div class="redeem-fixed-title">Fixed value</div>
-      ${fixed.map(c => `<div class="redeem-fixed-row"><span>${dot(c)}${c.name}<span class="redeem-kind">${redeemKind(c)}</span></span><span>${fmtCpp(cardCpp(c).cpp)}</span></div>`).join('')}
+      ${fixed.map(c => `<div class="redeem-fixed-row"><span>${dot(c)}${c.name}<span class="redeem-kind">${redeemKind(c)}</span></span><span>${fmtCpp(cardCpp(c, tab).cpp)}</span></div>`).join('')}
     </div>` : '');
   el.querySelectorAll('select').forEach(sel => sel.addEventListener('change', function() {
-    redeemByProgram[this.dataset.program] = this.value;
+    choices[this.dataset.program] = this.value; // this tab's choices only
     this.classList.remove('unset');
     recalc();
     renderUtilCards();
@@ -521,6 +543,7 @@ function renderWalletChips() {
     row.querySelector('.remove-btn').onclick = () => {
       owned.delete(c.name);
       newRowNotes = newRowNotes.filter(n => n.card !== c);
+      forgetUnusedChoices();
       buildWallet();
       refreshSpendLines();
       recalc();
@@ -546,7 +569,7 @@ function lineLevel(line) {
 // A brand row on a travel type names the type too ("Delta flights", "Hilton hotels"); store
 // merchants (Whole Foods, Amazon) already say what they are.
 function shortLabel(line) {
-  if (line.merchant) return line.travelType ? `${line.merchant} ${line.travelType.toLowerCase()}` : line.merchant;
+  if (line.merchant) return line.travelType ? `${line.merchant} ${TRAVEL_NOUNS[line.travelType]}` : line.merchant;
   return line.sub || TRAVEL_LABELS[line.travelType] || line.cat;
 }
 // Label in Monthly spend and the Optimizer table: a line with brand rows next to it covers the
@@ -573,7 +596,7 @@ function buildSpend() {
   const el = document.getElementById('spend-panel');
   const walletCards = CARDS.filter(c => owned.has(c.name));
   const dots = line => line.merchant ? walletCards.filter(c => merchantRate(c, line)).map(cardDot).join('') : '';
-  const field = line => `<input id="spend-${line.key}" type="number" value="${spend[line.key] || 0}" min="0" step="50" data-cat="${line.key}" aria-label="${line.label}">`;
+  const field = line => `<input id="spend-${line.key}" type="number" value="${spend[line.key] || ''}" min="0" step="50" data-cat="${line.key}" aria-label="${line.label}">`;
   const isNew = newRowKeys();
   const row = (line, label) => `
     <div class="spend-item lvl-${lineLevel(line)}${freshKeys.has(line.key) ? ' fresh' : ''}${isNew.has(line.key) ? ' is-new' : ''}">
@@ -597,14 +620,7 @@ function buildSpend() {
   el.innerHTML = SPEND_COLUMNS.map((_, i) =>
     `<div class="spend-col">${groups.filter(g => columnOf(g) === i).map(tile).join('')}</div>`).join('');
   el.querySelectorAll('input').forEach(input => input.addEventListener('input', function() {
-    // A split-out brand's amount comes out of its travel type
-    const brandLine = SPEND_LINES.find(l => l.key === this.dataset.cat && l.merchant && l.travelType);
-    if (brandLine) {
-      const v = Math.max(0, parseInt(this.value)||0), x = setBrandAmount(brandLine, v, spend);
-      if (x !== v) this.value = x;
-      document.getElementById('spend-Travel' + brandLine.travelType).value = spend['Travel' + brandLine.travelType];
-    } else
-    spend[this.dataset.cat] = Math.max(0, parseInt(this.value)||0);
+    spend[this.dataset.cat] = Math.max(0, parseInt(this.value)||0); // a brand row doesn't change All other
     // Filling in a new row clears its "New" tag (and the notice, once every new row is filled in)
     if (newRowKeys().has(this.dataset.cat)) {
       newRowNotes = newRowNotes.map(n => ({ ...n, lines: n.lines.filter(l => l.key !== this.dataset.cat) })).filter(n => n.lines.length);
@@ -669,7 +685,7 @@ function capText(cap) { return `$${cap.limit.toLocaleString()}/${PERIOD_LABEL[ca
 // most go first, so a shared cap fills with its highest-rate category. Returns a Map of
 // line → [{ card, channel, rate, amount, pts, value }] (amount in dollars a year; a line with no
 // spend gets one zero-amount entry, so the table can still show which card to use).
-function allocate(cards, lines, monthly = spend) {
+function allocate(cards, lines, monthly = spend, tab = 'opt') {
   const room = new Map(); // "card#capIndex" → yearly dollars left before the cap
   const roomLeft = (c, i) => {
     const k = c.name + '#' + i;
@@ -679,7 +695,7 @@ function allocate(cards, lines, monthly = spend) {
   const plans = lines.map(line => {
     const options = cards.flatMap(c => (line.travelType ? travelOptions(c, line) : [{ channel: null, rate: lineRate(c, line) }])
       .filter(o => o.rate > 0)
-      .map(o => ({ card: c, channel: o.channel, bonus: o.rate, cpp: cardCpp(c).cpp, cap: capIndex(c, line, o.channel) })));
+      .map(o => ({ card: c, channel: o.channel, bonus: o.rate, cpp: cardCpp(c, tab).cpp, cap: capIndex(c, line, o.channel) })));
     return { line, ann: (monthly[line.key] || 0) * 12, options, top: Math.max(0, ...options.map(o => o.bonus * o.cpp)) };
   });
   const result = new Map();
@@ -703,7 +719,7 @@ function allocate(cards, lines, monthly = spend) {
       else allocs.push({ card: best.card, channel: best.channel, rate: best.rate, amount, cap: best.cap });
       left -= amount;
     } while (left > 0.005);
-    allocs.forEach(a => { a.pts = a.amount * a.rate; a.value = a.pts * cardCpp(a.card).cpp; });
+    allocs.forEach(a => { a.pts = a.amount * a.rate; a.value = a.pts * cardCpp(a.card, tab).cpp; });
     result.set(line, allocs);
   });
   return result;
@@ -815,15 +831,15 @@ function recalc() {
   // comparison, but the spend and points belong to the other row.
   const optRow = (r, label, allocs, none, counted = true, note = '') => {
     const mo = allocs.reduce((sum, a) => sum + a.amount, 0) / 12;
-    // A split-out brand row has an amount box and "Undo split"; its travel type's "All other" row
-    // gets an amount box too. Both change Monthly spend.
-    const b = r.line.merchant && r.line.travelType ? r.line : null;
-    const editable = b || (r.line.travelType && hasBrandRows(r.line));
-    const box = line => `<span class="split-box">$<input id="opt-split-${line.key}" class="split-input" type="text" inputmode="numeric" autocomplete="off" data-key="${line.key}" value="${spend[line.key] || 0}" aria-label="Monthly spend on ${rowLabel(line).toLowerCase()}"></span>`;
+    // A split-out brand row has an amount box and "Undo split"; its parent's "All other" row gets an
+    // amount box too. Both change Monthly spend.
+    const b = isSplitBrand(r.line) ? r.line : null;
+    const editable = b || hasBrandRows(r.line);
+    const box = line => `<span class="split-box">$<input id="opt-split-${line.key}" class="split-input" type="text" inputmode="numeric" autocomplete="off" data-key="${line.key}" value="${spend[line.key] || ''}" aria-label="Monthly spend on ${rowLabel(line).toLowerCase()}"></span>`;
     return `<tr class="${counted ? '' : 'alt-way'}${b ? ' brand-row' : ''}">
-      <td class="cat-name lvl-${lineLevel(r.line)}">${label}${b ? `<button type="button" class="brand-unsplit" data-brand="${b.merchant}" data-type="${b.travelType}">Undo split</button>` : ''}</td>
+      <td class="cat-name lvl-${lineLevel(r.line)}">${label}${b ? `<button type="button" class="brand-unsplit" data-brand="${b.merchant}" data-parent="${parentKey(b)}">Undo split</button>` : ''}</td>
       <td class="num">${editable ? box(r.line) : counted ? '$' + fmt0(r.channels && allocs.length ? mo : r.mo) : '—'}</td>
-      ${cardCell(allocs, none, note)}
+      ${cardCell(PORTAL_TYPES.includes(r.line.travelType) ? allocs : allocs.map(a => ({ ...a, channel: null })), none, note)}
       ${rateCell(allocs)}
       ${counted && allocs.length ? ptsCell(allocs) : '<td class="num">—</td>'}
       ${cppCell(allocs)}
@@ -836,18 +852,17 @@ function recalc() {
   // wallet nothing is earned yet, so no totals.
   const nCards = owned.size;
   const moSpend = totalSpend / 12;
-  const hasResults = nCards > 0 && totalSpend > 0;
-  summaryState = { nCards, hasResults, totalVal };
-  renderSummaryTitle(true); // replaced below if results are held
-  document.getElementById('spend-total').textContent = '$' + fmt0(moSpend);
-
   // Hold the results until every points currency in the wallet has a redemption choice: without
   // one, points can't be valued, so cards can't be compared.
   const pending = pendingCurrencies(walletCards);
+  const hasResults = nCards > 0 && totalSpend > 0 && !pending.length;
+  summaryState = { nCards, hasSpend: totalSpend > 0, needsRedeem: pending.length > 0, hasResults, totalVal };
+  renderSummaryTitle(true);
+  document.getElementById('spend-total').textContent = '$' + fmt0(moSpend);
+
   document.getElementById('tab-optimizer').classList.toggle('held', pending.length > 0);
   if (pending.length) {
     const list = pending.length > 1 ? pending.slice(0, -1).join(', ') + ' and ' + pending[pending.length - 1] : pending[0];
-    document.getElementById('summary-title').textContent = 'Choose how you redeem your points to see what you can earn.';
     document.getElementById('hold-note').innerHTML = `<p>Your results will appear once you choose how you redeem ${list}.</p>`;
     return;
   }
@@ -856,12 +871,12 @@ function recalc() {
   // category that is a single line (Dining, Streaming...) is then called "All dining", "All streaming".
   const tableLabel = line => lineLevel(line) === 0 ? (line.cat === 'Other' ? 'All other' : `All ${line.cat.toLowerCase()}`) : rowLabel(line);
   const rowsFor = r => {
-    if (!r.channels) return optRow(r, tableLabel(r.line), r.allocs, 'None owned');
-    // Travel: one row with the way of booking that gets the spend (shown next to the card), and the
-    // other way as a grey note for comparison
-    const used = r.channels.filter(ch => ch.recommended).flatMap(ch => ch.allocs);
-    // Brand lines under the other-way note
+    // Brand and store lines (grey, under the card) for brands that aren't split out
     const brandNotes = brandNoteLines(r.line, walletCards).map(bl => brandNote(bl, walletCards)).join('');
+    if (!r.channels) return optRow(r, tableLabel(r.line), r.allocs, 'None owned', true, brandNotes);
+    // Travel: one row with the way of booking that gets the spend (shown next to the card), and the
+    // other way as a grey note for comparison, above the brand lines
+    const used = r.channels.filter(ch => ch.recommended).flatMap(ch => ch.allocs);
     return optRow(r, tableLabel(r.line), used, 'None owned', true, otherWayNote(r, used) + brandNotes);
   };
   document.getElementById('opt-tbody').innerHTML = groupLines(SPEND_LINES).map(g =>
@@ -929,23 +944,16 @@ function cardUses(rows, c) {
 // ─────────────────────────────────────────────────────────────
 // CARD BENEFITS (statement credits)
 // ─────────────────────────────────────────────────────────────
-// Dollar credits read from a card's `perks` text, as a yearly amount: "$120 Uber Cash" → 120,
-// "Up to $200 Uber Cash + $120 Uber One credit" → 320, Global Entry/TSA PreCheck (every 4 years)
-// → divided by 4. Only perks that start with the amount count; ones whose amount isn't a yearly
-// credit (a $0 fee, a points offer, a one-time bonus) are left out.
+// A card's dollar benefits, from its `credits` list in the data: { name, yearly } each, with
+// yearly the most it's worth a year (Global Entry every 4 years = $30). `text` is the key for
+// what the user says they'll redeem (creditUse). `perks` stays the full descriptive list.
 function cardCredits(card) {
-  return (card.perks || []).flatMap(text => {
-    const first = text.match(/^(?:Up to )?\$([\d,]+)(?![\d,]*-point)/);
-    if (!first || /after first purchase/i.test(text)) return [];
-    const extra = [...text.matchAll(/\+ \$([\d,]+)/g)].map(m => +m[1].replace(/,/g, ''));
-    let amount = [+first[1].replace(/,/g, ''), ...extra].reduce((sum, a) => sum + a, 0);
-    if (/4 yrs|Global Entry/.test(text)) amount /= 4;
-    return amount > 0 ? [{ text, name: creditName(text), amount }] : [];
-  });
+  // `text` is the key for saved amounts (the name as in the data); `name` is shown, with a capital first letter
+  return (card.credits || []).filter(cr => cr.yearly > 0).map(cr => ({ text: cr.name, name: cr.name.charAt(0).toUpperCase() + cr.name.slice(1), amount: cr.yearly }));
 }
-// A credit's name without its dollar amounts, which the Worth column shows: "Up to $500 The Edit
-// hotel credit" → "The Edit hotel credit", "$300 airline + $150 lifestyle credit" → "airline +
-// lifestyle credit". Conditions like "($500+ stay)" are kept.
+// Before 2026-11-06 credits were read from the perks text, and redeemed amounts were saved under
+// the perk's full text ("$300 annual travel credit"). This gives the name it has now
+// ("annual travel credit"), so those saved amounts carry over.
 function creditName(text) {
   return text.replace(/^(?:Up to )?\$[\d,]+(?:\/yr)?\s+/, '').replace(/\+ \$[\d,]+\s+/g, '+ ');
 }
@@ -954,9 +962,44 @@ function creditName(text) {
 let creditUse = {};
 const openBenefits = new Set(); // cards whose benefits list is open in "Net value per card"
 
+// ── Sign-up bonus ──────────────────────────────────────
+// What the user types for each card's sign-up bonus: { cardName: { pts, dollars } }. Points are
+// valued at the card's own ¢/pt (the redemption choice); dollars cover cash bonuses, statement
+// credits, gift cards, and the user's own value for free nights or companion fares.
+// It's a one-time amount, so it isn't in the yearly net value. Once any card has one, every strip
+// (and the total bar) shows two more columns: "+ Sign-up bonus" and "= First year".
+let signupBonus = {};
+const openBonus = new Set(); // cards whose bonus box is open
+function bonusValue(c) {
+  const b = signupBonus[c.name] || {};
+  return (b.pts || 0) * cardCpp(c).cpp + (b.dollars || 0);
+}
+const anyBonus = () => CARDS.some(c => owned.has(c.name) && bonusValue(c) > 0);
+const isCashCard = c => c.currency === 'cash' && cardProgram(c).program === c.program;
+
+// The card's current public offer (`welcomeOffer` in the card data), at the top of the bonus box.
+// "Use this" fills in its points (`pts`) and cash (`dollars`). There's no "Use this" when the offer
+// varies by person (`upTo`) or has no points or cash to fill in (e.g. free night awards). Free nights,
+// companion fares and other extras are in the text for the user to value. A card with no offer in the
+// data shows none.
+function offerHTML(c) {
+  const o = c.welcomeOffer;
+  if (!o) return '';
+  const month = new Date(o.checked + 'T12:00').toLocaleString('en-US', { month: 'short', year: 'numeric' });
+  const canUse = !o.upTo && (o.pts || o.dollars);
+  const note = o.upTo ? 'The amount varies by person. Enter the offer you were given below.'
+    : !canUse ? 'Enter what it\'s worth to you below.' : '';
+  return `<div class="fee-offer">
+    <div class="fee-offer-head">Current offer <span>${o.site}, checked ${month}</span></div>
+    <p class="fee-offer-text">${o.text}</p>
+    ${note ? `<p class="fee-offer-note">${note}</p>` : ''}
+    <div class="fee-offer-actions">${canUse ? '<button type="button" class="fee-offer-use">Use this</button><span aria-hidden="true">·</span>' : ''}<a href="${o.url}" target="_blank" rel="noopener">See on ${o.site} ↗</a></div>
+  </div>`;
+}
+
 // The wallet's net value a year: points value of all spend + benefits the user will redeem − annual
 // fees. Shown in the summary banner and the total bar under "Net value per card", so they always match.
-let summaryState = { nCards: 0, hasResults: false, totalVal: 0 };
+let summaryState = { nCards: 0, hasSpend: false, needsRedeem: false, hasResults: false, totalVal: 0 };
 // walletTotals() also gives each part, for the total bar's columns.
 function walletTotals() {
   const walletCards = CARDS.filter(c => owned.has(c.name));
@@ -964,21 +1007,60 @@ function walletTotals() {
   const benefits = walletCards.reduce((sum, c) => sum + Object.values(creditUse[c.name] || {}).reduce((a, v) => a + v, 0), 0);
   const worth = walletCards.reduce((sum, c) => sum + cardCredits(c).reduce((a, cr) => a + cr.amount, 0), 0);
   const fees = walletCards.reduce((sum, c) => sum + c.fee, 0);
-  return { points, benefits, worth, fees, net: points + benefits - fees };
+  const bonus = walletCards.reduce((sum, c) => sum + bonusValue(c), 0); // one-time, so not in net
+  return { points, benefits, worth, fees, bonus, net: points + benefits - fees };
 }
 function walletNet() { return walletTotals().net; }
 // Banner headline. Dollars, not points: points from different cards are worth different amounts, so
-// they don't add up. (The amount is after annual fees; the banner doesn't say so.) Left alone while
-// results are held for a redemption choice, since that has its own message.
+// they don't add up. (The amount is after annual fees; the banner doesn't say so.) Until there's
+// something to show, it names every input still missing: monthly spend, cards and/or how points
+// are redeemed, e.g. "Add your monthly spend and choose how you redeem your points to see what you
+// can earn." (How you redeem only comes up once there are cards with points.)
 function renderSummaryTitle(force = false) {
   if (!force && document.getElementById('tab-optimizer').classList.contains('held')) return;
-  const { nCards, hasResults } = summaryState;
+  const { nCards, hasSpend, needsRedeem, hasResults } = summaryState;
+  const el = document.getElementById('summary-title');
+  const note = document.getElementById('summary-note');
+  if (!hasResults) {
+    const add = [!hasSpend && 'monthly spend', !nCards && 'cards'].filter(Boolean);
+    const parts = [add.length && `add your ${add.join(' and ')}`, needsRedeem && 'choose how you redeem your points'].filter(Boolean);
+    const sentence = parts.join(' and ');
+    el.textContent = sentence.charAt(0).toUpperCase() + sentence.slice(1) + ' to see what you can earn.';
+    note.hidden = true;
+    return;
+  }
   const net = walletNet();
-  document.getElementById('summary-title').innerHTML = !hasResults
-    ? (nCards ? 'Add your monthly spend to see what you can earn.' : 'Add your cards to see what you can earn.')
-    : net >= 0 ? `You can earn <em>$${fmt0(net)} a year</em> with your cards.`
+  el.innerHTML = net >= 0 ? `You can earn <em>$${fmt0(net)} a year</em> with your cards.`
     : `Your cards cost <em class="loss">$${fmt0(-net)} a year</em> more in annual fees than they earn.`;
+  // Second line while a wallet card's benefits haven't been entered, so the amount above leaves them out
+  const missing = cardsMissingBenefits();
+  const withBenefits = CARDS.filter(c => owned.has(c.name) && cardCredits(c).length);
+  note.hidden = !missing.length;
+  document.getElementById('summary-note-text').textContent = missing.length === withBenefits.length
+    ? 'Doesn\'t include your card benefits yet.' : 'Some card benefits aren\'t included yet.';
 }
+
+// Wallet cards that have benefits, with nothing entered yet for any of them
+function cardsMissingBenefits() {
+  return CARDS.filter(c => owned.has(c.name) && cardCredits(c).length && !Object.values(creditUse[c.name] || {}).some(v => v > 0));
+}
+// "Enter benefits ↓": open Net $ value per card and the first card's benefits list that needs filling
+// in, scroll so the section's heading sits just below the sticky banner (its note and the two hint
+// lines stay in view), and put the cursor in the card's first box
+document.getElementById('summary-note-link').addEventListener('click', () => {
+  const card = cardsMissingBenefits()[0];
+  if (!card) return;
+  const grid = document.getElementById('fee-grid');
+  const section = grid.closest('details');
+  section.open = true;
+  const cardEl = [...grid.querySelectorAll('.fee-card')].find(el => el.dataset.card === card.name);
+  if (!cardEl) return;
+  if (!cardEl.classList.contains('open')) cardEl.querySelector('.fee-ben-toggle')?.click();
+  // Cursor first: focusing during a smooth scroll can cancel it
+  cardEl.querySelector('.fee-credit-use input')?.focus({ preventScroll: true });
+  const bannerHeight = document.querySelector('.summary-wrap').offsetHeight; // stuck at the top once scrolled
+  window.scrollTo({ top: window.scrollY + section.getBoundingClientRect().top - bannerHeight - 12, behavior: 'smooth' });
+});
 
 // Fee coverage when the wallet is used the way the Optimizer recommends: each card earns only on
 // the spend the Optimizer sends to it (travel booked the recommended way, splits at caps), plus the
@@ -988,12 +1070,13 @@ function renderFeeCoverage(rows) {
   const ownedCards = CARDS.filter(c => owned.has(c.name));
 
   if (ownedCards.length === 0) {
-    el.innerHTML = `<div class="empty-gap"><p>Add cards to your wallet to see fee coverage.</p></div>`;
+    el.innerHTML = `<div class="empty-gap"><p>Add cards to your wallet to see the net value of your cards.</p></div>`;
     return;
   }
 
-  const hint = ownedCards.some(c => cardCredits(c).length)
-    ? `<p class="fee-hint">Click <b>Enter benefits</b> on each card and type what you'll redeem a year, so its net value counts them.</p>` : '';
+  const hint = (ownedCards.some(c => cardCredits(c).length)
+    ? `<p class="fee-hint">Click <b>Enter benefits</b> on each card and type what you'll redeem a year, so its net value counts them.</p>` : '') +
+    `<p class="fee-hint">New card? Click <b>+ Sign-up bonus</b> under its name to see your first year with the bonus.</p>`;
   el.innerHTML = hint + ownedCards.map(c => {
     const { pts: annualPts } = cardUses(rows, c);
     const pointValue = cardCpp(c).cpp;
@@ -1006,10 +1089,13 @@ function renderFeeCoverage(rows) {
     const open = openBenefits.has(c.name);
     // One strip per card, read left to right as a sum: points + benefits − fee = net value.
     // The benefits list opens under the strip.
-    return `<div class="fee-card${open ? ' open' : ''}" data-card="${c.name}" data-earned="${earnedVal}">
+    const b = signupBonus[c.name] || {};
+    const num = v => v ? fmt0(v) : '';
+    return `<div class="fee-card${open ? ' open' : ''}${openBonus.has(c.name) ? ' bonus-open' : ''}" data-card="${c.name}" data-earned="${earnedVal}">
       <div class="fee-strip">
         <div>
           <div class="fee-name">${cardDot(c)}${c.name}</div>
+          <button type="button" class="fee-bonus-link" aria-expanded="${openBonus.has(c.name)}" aria-controls="${id}-bonus"></button>
         </div>
         <div class="fee-stat"><div class="fee-label">${fmt0(annualPts)} pts/yr @ ${fmtCpp(pointValue).replace('/pt', '')}</div><div class="fee-v">$${fmt0(earnedVal)}</div></div>
         <div class="fee-stat"><div class="fee-label">+ Benefits</div>${credits.length
@@ -1018,6 +1104,25 @@ function renderFeeCoverage(rows) {
           : '<div class="fee-ben-none">None to track</div>'}</div>
         <div class="fee-stat"><div class="fee-label">− Annual fee</div><div class="fee-v">$${fmt0(c.fee)}</div></div>
         <div class="fee-net"><div class="fee-label">= Net value</div><span class="fee-net-pill"><span class="fee-net-val"></span></span></div>
+        <div class="fee-stat fee-bonus-col"><div class="fee-label">+ Sign-up bonus</div><div class="fee-v fee-bonus-v"></div></div>
+        <div class="fee-first fee-bonus-col"><div class="fee-label">= First year</div><span class="fee-first-pill"><span class="fee-first-val"></span></span></div>
+      </div>
+      <div class="fee-panels"><!-- the sign-up bonus box (left) and the benefits list (right), side by side when both are open -->
+      <div class="fee-bonus" id="${id}-bonus">
+        <div class="fee-bonus-title">Sign-up bonus <span>One-time, so it's only added to your first year</span></div>
+        ${offerHTML(c)}
+        ${isCashCard(c) ? '' : `
+        <div class="fee-bonus-row">
+          <label for="${id}-bpts">Points or miles</label>
+          <span class="fee-bonus-in"><input id="${id}-bpts" type="text" inputmode="numeric" autocomplete="off" data-field="pts" value="${num(b.pts)}"> pts</span>
+          <span class="fee-bonus-worth" data-worth="pts"></span>
+        </div>`}
+        <div class="fee-bonus-row">
+          <label for="${id}-bdol">Cash, credits or other value<small>A cash bonus, statement credit or gift card, or what a free night or companion fare is worth to you</small></label>
+          <span class="fee-bonus-in">$<input id="${id}-bdol" type="text" inputmode="numeric" autocomplete="off" data-field="dollars" value="${num(b.dollars)}"></span>
+          <span class="fee-bonus-worth"></span>
+        </div>
+        <div class="fee-bonus-row total"><span>Bonus value</span><span></span><b class="fee-bonus-total"></b></div>
       </div>
       ${credits.length ? `
       <div class="fee-credits" id="${id}-list">
@@ -1026,9 +1131,11 @@ function renderFeeCoverage(rows) {
         <div class="fee-credit">
           <label for="${id}-cr${i}">${cr.name}</label>
           <span class="fee-credit-max">$${fmt0(cr.amount)}</span>
-          <span class="fee-credit-use">$<input id="${id}-cr${i}" type="text" inputmode="decimal" autocomplete="off" value="${use[cr.text] || 0}" data-max="${cr.amount}" data-credit="${cr.text}" aria-label="Dollars a year you'll redeem of ${cr.text}"></span>
+          <span class="fee-credit-use">$<input id="${id}-cr${i}" type="text" inputmode="decimal" autocomplete="off" value="${use[cr.text] ? fmt0(use[cr.text]) : ''}" data-max="${cr.amount}" data-credit="${cr.text}" aria-label="Dollars a year you'll redeem of ${cr.text}"></span>
         </div>`).join('')}
+        <div class="fee-credit total"><span>Benefits value</span><span class="fee-credit-max">$${fmt0(worth)}</span><b class="fee-ben-total"></b></div>
       </div>` : ''}
+      </div>
     </div>`;
   }).join('') + `
     <div class="fee-total">
@@ -1038,6 +1145,8 @@ function renderFeeCoverage(rows) {
         <div class="fee-stat"><div class="fee-label">+ Benefits</div><div class="fee-v fee-total-ben"></div></div>
         <div class="fee-stat"><div class="fee-label">− Annual fees</div><div class="fee-v fee-total-fees"></div></div>
         <div class="fee-net"><div class="fee-label">= Net value</div><span class="fee-net-pill"><span class="fee-net-val"></span></span></div>
+        <div class="fee-stat fee-bonus-col"><div class="fee-label">+ Sign-up bonuses</div><div class="fee-v fee-total-bonus"></div></div>
+        <div class="fee-first fee-bonus-col"><div class="fee-label">= First year</div><span class="fee-first-pill"><span class="fee-first-val"></span></span></div>
       </div>
     </div>`;
   updateFeeTotal();
@@ -1060,7 +1169,31 @@ function renderFeeCoverage(rows) {
         updateFeeTotal();
         renderSummaryTitle();
       });
-      input.addEventListener('blur', function() { this.value = fmt0(creditUse[name]?.[this.dataset.credit] || 0); });
+      input.addEventListener('blur', function() { const v = creditUse[name]?.[this.dataset.credit]; this.value = v ? fmt0(v) : ''; });
+    });
+    // Open or close the sign-up bonus box; typed points and dollars update the strip in place
+    cardEl.querySelector('.fee-bonus-link').addEventListener('click', function() {
+      const isOpen = cardEl.classList.toggle('bonus-open');
+      this.setAttribute('aria-expanded', isOpen);
+      this.textContent = (isOpen ? '− ' : '+ ') + 'Sign-up bonus';
+      isOpen ? openBonus.add(name) : openBonus.delete(name);
+      if (isOpen) cardEl.querySelector('.fee-bonus input').focus();
+    });
+    // "Use this" fills in the current offer; the boxes can still be changed
+    cardEl.querySelector('.fee-offer-use')?.addEventListener('click', () => {
+      const o = CARDS.find(x => x.name === name).welcomeOffer;
+      signupBonus[name] = { pts: o.pts || 0, dollars: o.dollars || 0 };
+      cardEl.querySelectorAll('.fee-bonus input').forEach(i => { const v = signupBonus[name][i.dataset.field]; i.value = v ? fmt0(v) : ''; });
+      updateFeeCard(cardEl);
+      updateFeeTotal();
+    });
+    cardEl.querySelectorAll('.fee-bonus input').forEach(input => {
+      input.addEventListener('input', function() {
+        (signupBonus[name] = signupBonus[name] || {})[this.dataset.field] = parseInt(this.value.replace(/[^0-9]/g, '')) || 0;
+        updateFeeCard(cardEl);
+        updateFeeTotal();
+      });
+      input.addEventListener('blur', function() { const v = signupBonus[name]?.[this.dataset.field]; this.value = v ? fmt0(v) : ''; });
     });
     updateFeeCard(cardEl);
   });
@@ -1077,6 +1210,12 @@ function updateFeeTotal() {
   el.querySelector('.fee-total-fees').textContent = `$${fmt0(t.fees)}`;
   el.querySelector('.fee-net-val').textContent = `${t.net >= 0 ? '+' : '−'}$${fmt0(Math.abs(t.net))}`;
   el.classList.toggle('short', t.net < 0);
+  // The bonus columns appear on every strip once any card has a bonus
+  const first = t.net + t.bonus;
+  el.querySelector('.fee-total-bonus').textContent = `$${fmt0(t.bonus)}`;
+  el.querySelector('.fee-first-val').textContent = `${first >= 0 ? '+' : '−'}$${fmt0(Math.abs(first))}`;
+  el.classList.toggle('first-short', first < 0);
+  document.getElementById('fee-grid').classList.toggle('has-bonus', anyBonus());
 }
 
 // Totals for one fee coverage card (points value + benefits used − fee), updated in place as the
@@ -1087,6 +1226,8 @@ function updateFeeCard(cardEl) {
   const net = +cardEl.dataset.earned + benefits - c.fee;
   const usedEl = cardEl.querySelector('.fee-ben-used');
   if (usedEl) usedEl.textContent = `$${fmt0(benefits)}`;
+  const benTotal = cardEl.querySelector('.fee-ben-total'); // the "Benefits value" row: what you'll redeem a year
+  if (benTotal) benTotal.textContent = `$${fmt0(benefits)}`;
   // Until something is entered, the benefits button asks to be filled in
   cardEl.classList.toggle('ben-empty', !!usedEl && benefits === 0);
   // The style says whether the fee is covered. A card with no fee looks like one whose fee is covered.
@@ -1094,7 +1235,30 @@ function updateFeeCard(cardEl) {
   cardEl.classList.remove('covered', 'short');
   cardEl.classList.add(cls);
   cardEl.querySelector('.fee-net-val').textContent = `${net >= 0 ? '+' : '−'}$${fmt0(Math.abs(net))}`;
+  // Sign-up bonus columns, link and box
+  const bonus = bonusValue(c), first = net + bonus, b = signupBonus[c.name] || {};
+  cardEl.querySelector('.fee-bonus-v').textContent = bonus ? `$${fmt0(bonus)}` : '—';
+  cardEl.querySelector('.fee-first-val').textContent = `${first >= 0 ? '+' : '−'}$${fmt0(Math.abs(first))}`;
+  cardEl.classList.toggle('first-short', first < 0);
+  cardEl.querySelector('.fee-bonus-link').textContent = (cardEl.classList.contains('bonus-open') ? '− ' : '+ ') + 'Sign-up bonus'; // − while its box is open
+  const ptsWorth = cardEl.querySelector('[data-worth="pts"]');
+  if (ptsWorth) ptsWorth.textContent = `× ${+(cardCpp(c).cpp * 100).toFixed(2)}¢ = $${fmt0((b.pts || 0) * cardCpp(c).cpp)}`;
+  cardEl.querySelector('.fee-bonus-total').textContent = `$${fmt0(bonus)}`;
 }
+
+// Closing the "Net value per card" section closes every card's sign-up bonus box and benefits list,
+// so they're closed when it's opened again
+document.getElementById('fee-grid').closest('details').addEventListener('toggle', function() {
+  if (this.open) return;
+  openBenefits.clear(); openBonus.clear();
+  this.querySelectorAll('.fee-card').forEach(card => {
+    card.classList.remove('open', 'bonus-open');
+    card.querySelector('.fee-ben-toggle')?.setAttribute('aria-expanded', 'false');
+    const link = card.querySelector('.fee-bonus-link');
+    link.setAttribute('aria-expanded', 'false');
+    link.textContent = '+ Sign-up bonus';
+  });
+});
 
 // "Which card to use": one line per wallet card listing the spend it should get (travel says which
 // way to book), in the order the cards were added.
@@ -1179,7 +1343,7 @@ function renderUtilCards() {
       <div class="util-card-header">
         <div>
           <h4>${card.name}</h4>
-          <div class="util-spend-sub">${ISSUER_NAMES[card.issuer] || card.issuer} · $${card.fee}/yr annual fee${cardCpp(card).pending ? '' : ` · ${fmtCpp(cardCpp(card).cpp)} (${cardCpp(card).label})`}</div>
+          <div class="util-spend-sub">${ISSUER_NAMES[card.issuer] || card.issuer} · $${card.fee}/yr annual fee${cardCpp(card, 'util').pending ? '' : ` · ${fmtCpp(cardCpp(card, 'util').cpp)} (${cardCpp(card, 'util').label})`}</div>
         </div>
         <div class="util-actions">
           <select class="util-swap-select" data-card="${cardName}" aria-label="Change card">
@@ -1238,7 +1402,7 @@ function renderUtilCards() {
       const rate = lineRate(card, line);
       // Travel rows: say which way of booking the rate assumes, and what the other way earns
       let sub = '';
-      if (line.travelType) {
+      if (line.travelType && PORTAL_TYPES.includes(line.travelType)) { // rideshare & transit has no way to choose
         const opts = travelOptions(card, line);
         const best = bestTravelOption(card, line);
         sub = opts.length === 1
@@ -1253,10 +1417,13 @@ function renderUtilCards() {
         const shared = cap.categories.length > 1 ? ' (shared)' : '';
         sub += `${sub ? ' · ' : ''}${rate}x on first ${capText(cap)}${shared}, then ${cap.rateAfter}x`;
       }
-      // Brand lines for this card against your wallet, and "Undo split" on a split-out brand
-      const others = CARDS.filter(c => owned.has(c.name) && c !== card);
-      sub += brandNoteLines(line, [card], utilSplitSet(cardName)).map(bl => brandNote(bl, [card, ...others], `data-card="${cardName}"`, card)).join('');
-      if (line.merchant && line.travelType) sub += `${sub ? ' · ' : ''}taken out of ${line.travelType.toLowerCase()} · <button type="button" class="brand-unsplit" data-card="${cardName}" data-brand="${line.merchant}" data-type="${line.travelType}">Undo split</button>`;
+      // Brand lines for this card alone (not the wallet: the tabs are independent), and "Undo split"
+      // on a split-out brand
+      sub += brandNoteLines(line, [card], utilSplitSet(cardName)).map(bl => brandNote(bl, [card], `data-card="${cardName}"`, card)).join('');
+      if (isSplitBrand(line)) {
+        const from = line.travelType ? TRAVEL_LABELS[line.travelType] : line.sub || line.cat;
+        sub += `${sub ? ' · ' : ''}split out of ${from.toLowerCase()} · <button type="button" class="brand-unsplit" data-card="${cardName}" data-brand="${line.merchant}" data-parent="${parentKey(line)}">Undo split</button>`;
+      }
       return `
       <div class="spend-row">
         <span class="spend-label">${line.label}${sub ? `<span class="spend-sub">${sub}</span>` : ''}</span>
@@ -1264,7 +1431,7 @@ function renderUtilCards() {
           <span class="rate-badge ${rateClass(rate)}">${rate}x</span>
           <div class="spend-input-wrap">
             <span>$</span>
-            <input type="number" class="util-spend-input" data-card="${cardName}" data-cat="${line.key}" value="${cs[line.key] || 0}" min="0" step="10">
+            <input type="number" class="util-spend-input" data-card="${cardName}" data-cat="${line.key}" value="${cs[line.key] || ''}" min="0" step="10">
           </div>
         </div>
       </div>
@@ -1273,14 +1440,8 @@ function renderUtilCards() {
 
     block.querySelectorAll('.util-spend-input').forEach(input => {
       input.addEventListener('input', function() {
-        // A split-out brand's amount comes out of its travel type
-        const store = cardSpend[this.dataset.card], v = Math.max(0, parseFloat(this.value) || 0);
-        const brandLine = lines.find(l => l.key === this.dataset.cat && l.merchant && l.travelType);
-        if (brandLine) {
-          const x = setBrandAmount(brandLine, v, store);
-          if (x !== v) this.value = x;
-          block.querySelector(`.util-spend-input[data-cat="Travel${brandLine.travelType}"]`).value = store['Travel' + brandLine.travelType];
-        } else store[this.dataset.cat] = v;
+        // Each row keeps its own amount; a split-out brand doesn't change All other
+        cardSpend[this.dataset.card][this.dataset.cat] = Math.max(0, parseFloat(this.value) || 0);
         renderUtilResult(card, cardSpend[this.dataset.card], blockId);
       });
     });
@@ -1292,6 +1453,7 @@ function renderUtilCards() {
   container.querySelectorAll('.util-remove-btn').forEach(btn => {
     btn.addEventListener('click', function() {
       cardsUnderReview.delete(this.dataset.card);
+      forgetUnusedChoices();
       renderUtilCards();
     });
   });
@@ -1313,6 +1475,7 @@ function renderUtilCards() {
       // Rebuild the Set in the same order, swapping oldName -> newName in place
       const ordered = Array.from(cardsUnderReview).map(n => n === oldName ? newName : n);
       cardsUnderReview = new Set(ordered);
+      forgetUnusedChoices();
 
       renderUtilCards();
     });
@@ -1321,15 +1484,15 @@ function renderUtilCards() {
 
 function renderUtilResult(card, cs, blockId) {
   // Travel assumes each type is booked this card's better way; spend over a cap earns the cap's rateAfter
-  const annualPts = [...allocate([card], buildSpendLines([card], utilSplitSet(card.name)), cs).values()].flat().reduce((sum, a) => sum + a.pts, 0);
-  // Value per point for this card's own currency and the chosen redemption style
-  const { cpp: effectiveCpp, label: currencyLabel, pending } = cardCpp(card);
+  const annualPts = [...allocate([card], buildSpendLines([card], utilSplitSet(card.name)), cs, 'util').values()].flat().reduce((sum, a) => sum + a.pts, 0);
+  // Value per point for this card's own currency and Card utilization's redemption choice
+  const { cpp: effectiveCpp, label: currencyLabel, pending } = cardCpp(card, 'util');
   if (pending) {
     document.getElementById(`${blockId}-result`).innerHTML = `
     <div class="util-result-bar">
       <div>
         <div class="util-result-label">Points earned/yr</div>
-        <div class="util-result-pts">${fmt0(annualPts)} pts · choose how you redeem ${pendingCurrencies([card])[0]} under “How you redeem points” to see their value</div>
+        <div class="util-result-pts">${fmt0(annualPts)} pts · choose how you redeem ${pendingCurrencies([card], 'util')[0]} under “How you redeem points” to see their value</div>
       </div>
     </div>`;
     return;
@@ -1355,6 +1518,86 @@ function renderUtilResult(card, cs, blockId) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// SAVED INPUTS
+// ─────────────────────────────────────────────────────────────
+// Everything the user enters is kept in this browser (localStorage), so it's there next time they
+// open Stackwise: wallet, monthly spend, split-out brands, redemption choices, benefits they'll use,
+// sign-up bonuses, and the Card utilization tab's cards, spend and splits. Nothing leaves the browser.
+const SAVE_KEY = 'stackwise-inputs-v1';
+let inputsLoaded = false; // don't save until saved inputs are read, or a blank page could overwrite them
+function saveInputs() {
+  if (!inputsLoaded) return;
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      owned: [...owned], spend, splitBrands: [...splitBrands], redeemByProgram, creditUse, signupBonus,
+      cardsUnderReview: [...cardsUnderReview], cardSpend, utilRedeemByProgram,
+      utilSplits: Object.fromEntries(Object.entries(utilSplits).map(([name, set]) => [name, [...set]]))
+    }));
+  } catch (e) { /* storage full or turned off: inputs just aren't kept */ }
+}
+// Read saved inputs once the card data is in. Cards no longer in the data are dropped.
+function loadInputs() {
+  inputsLoaded = true;
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch (e) { return; }
+  if (!saved) return;
+  const known = name => CARDS.some(c => c.name === name);
+  owned = new Set((saved.owned || []).filter(known));
+  spend = saved.spend || {};
+  (saved.splitBrands || []).forEach(b => splitBrands.add(b));
+  redeemByProgram = saved.redeemByProgram || {};
+  // Card utilization's own choices; saved inputs from before the tabs were separated start with a
+  // copy of the shared ones (then each tab keeps only its own cards' currencies)
+  utilRedeemByProgram = saved.utilRedeemByProgram || { ...redeemByProgram };
+  creditUse = saved.creditUse || {};
+  // Redeemed amounts saved under a perk's full text (before 2026-11-06) move to the credit's name
+  Object.values(creditUse).forEach(use => Object.keys(use).forEach(k => {
+    const name = creditName(k);
+    if (name !== k) { if (!(name in use)) use[name] = use[k]; delete use[k]; }
+  }));
+  signupBonus = saved.signupBonus || {};
+  cardsUnderReview = new Set((saved.cardsUnderReview || []).filter(known));
+  cardSpend = saved.cardSpend || {};
+  Object.entries(saved.utilSplits || {}).forEach(([name, brands]) => { utilSplits[name] = new Set(brands); });
+  // Online grocery used to be a row of its own: its saved amount moves into Supermarkets.
+  const OLD_ONLINE = 'Sub_Grocery_Online_grocery', SUPERMARKETS = 'Sub_Grocery_Supermarkets';
+  [spend, ...Object.values(cardSpend)].forEach(store => {
+    if (store[OLD_ONLINE]) store[SUPERMARKETS] = (store[SUPERMARKETS] || 0) + store[OLD_ONLINE];
+    delete store[OLD_ONLINE];
+  });
+  // Store rows (Whole Foods, Amazon…) used to be rows of their own. Amounts saved in them stay
+  // split out, so nothing typed before is lost.
+  const brandOf = key => CARDS.flatMap(c => c.merchantRates || []).find(m => m.line !== 'Travel' && merchKey(m.merchant) === key);
+  const keepSplit = (store, set) => Object.keys(store).forEach(k => { const m = k.startsWith('Merch_') && store[k] > 0 && brandOf(k); if (m) set.add(m.merchant); });
+  keepSplit(spend, splitBrands);
+  Object.entries(cardSpend).forEach(([name, cs]) => keepSplit(cs, utilSplitSet(name)));
+  forgetUnusedChoices(); // choices saved before 2026-11-06 could outlive their cards
+}
+// "Clear all": after a confirm, empty the inputs of the tab you're on, and save that.
+//  - Points Optimizer: wallet, monthly spend, split-out brands, benefits, sign-up bonuses.
+//  - Card utilization: the cards under review, their spend and split-outs.
+// Each tab's redemption choices go with it; the other tab is left alone.
+function clearAllInputs() {
+  const onUtil = document.querySelector('.main').classList.contains('tab-utilization');
+  if (!confirm(onUtil
+    ? 'Clear all your inputs on Card utilization? This removes the cards you are reviewing, their spend and redemption choices.'
+    : 'Clear all your inputs on Points Optimizer? This removes your cards, spend, redemption choices and benefits.')) return;
+  if (onUtil) {
+    cardsUnderReview = new Set(); cardSpend = {}; utilRedeemByProgram = {};
+    Object.keys(utilSplits).forEach(k => delete utilSplits[k]);
+  } else {
+    owned = new Set(); spend = {}; creditUse = {}; signupBonus = {}; redeemByProgram = {};
+    splitBrands.clear(); newRowNotes = []; removedRows.clear(); openBenefits.clear(); openBonus.clear();
+  }
+  buildWallet(); refreshSpendLines(); recalc();
+  saveInputs();
+}
+document.getElementById('clear-all-btn').addEventListener('click', clearAllInputs);
+
+// Save after anything the user does (each handler runs first, then this)
+['input', 'change', 'click', 'keydown'].forEach(type => document.addEventListener(type, () => setTimeout(saveInputs)));
+
+// ─────────────────────────────────────────────────────────────
 // INIT
 // ─────────────────────────────────────────────────────────────
 const dataReady = window.STACKWISE_DATA
@@ -1371,11 +1614,7 @@ dataReady
     ({ categories: CATS, categoryColors: CAT_COLORS, loyaltyPrograms: LOYALTY_PROGRAMS,
        issuerNames: ISSUER_NAMES, cards: CARDS, valuations: VALUATION } = data);
     SUB_CATEGORIES = data.subCategories || {};
-    // Sample wallet: cards marked owned:true, in the order they were added for the sample (a card's
-    // dot color follows the order it was added); any other owned:true card goes last
-    const sampleOrder = ['Amex Blue Cash Preferred', 'Chase Sapphire Reserve', 'Amex Gold', 'Chase Prime Visa', 'Amex Marriott Bonvoy Brilliant'];
-    const rank = name => (i => i < 0 ? sampleOrder.length : i)(sampleOrder.indexOf(name));
-    owned = new Set(CARDS.filter(c => c.owned).map(c => c.name).sort((a, b) => rank(a) - rank(b)));
+    loadInputs(); // what the user entered last time, if anything; otherwise everything starts blank
     SPEND_LINES = buildSpendLines();
     // Adding a card: note any Monthly spend rows it brings in (see renderNewRowsNote)
     const addToWallet = c => {
